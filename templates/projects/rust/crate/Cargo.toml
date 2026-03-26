@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/*"]
+exclude = ["tools/repo-check"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"

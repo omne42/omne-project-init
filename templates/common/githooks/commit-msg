@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+msg_file="${1:-}"
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+  echo "commit-msg: missing commit message file path" >&2
+  exit 1
+fi
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+run_with_manifest() {
+  manifest_path="$1"
+  if [ ! -f "$manifest_path" ]; then
+    return 1
+  fi
+  exec cargo run --quiet --manifest-path "$manifest_path" -- commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+}
+
+manifest_override="${OMNE_REPO_CHECK_MANIFEST:-}"
+if [ -n "$manifest_override" ]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "commit-msg: cargo is required when OMNE_REPO_CHECK_MANIFEST is set." >&2
+    exit 1
+  fi
+  case "$manifest_override" in
+    /*) run_with_manifest "$manifest_override" ;;
+    *) run_with_manifest "$repo_root/$manifest_override" ;;
+  esac
+  echo "commit-msg: OMNE_REPO_CHECK_MANIFEST does not point to a manifest: $manifest_override" >&2
+  exit 1
+fi
+
+binary_override="${OMNE_REPO_CHECK_BIN:-}"
+if [ -n "$binary_override" ]; then
+  exec "$binary_override" commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+fi
+
+default_manifest="$repo_root/tools/repo-check/Cargo.toml"
+if [ -f "$default_manifest" ] && command -v cargo >/dev/null 2>&1; then
+  run_with_manifest "$default_manifest"
+fi
+
+if command -v omne-repo-check >/dev/null 2>&1; then
+  exec omne-repo-check commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+fi
+
+if command -v repo-check >/dev/null 2>&1; then
+  exec repo-check commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+fi
+
+cat >&2 <<'EOF'
+commit-msg: unable to locate a repo-check runner.
+
+Supported forms:
+- repo-local manifest: tools/repo-check/Cargo.toml
+- repo-local manifest override: OMNE_REPO_CHECK_MANIFEST=path/to/Cargo.toml
+- external binary override: OMNE_REPO_CHECK_BIN=/path/to/omne-repo-check
+- external binary on PATH: omne-repo-check or repo-check
+EOF
+exit 1

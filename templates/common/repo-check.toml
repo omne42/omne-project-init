@@ -1,0 +1,10 @@
+template_version = "__TEMPLATE_VERSION__"
+repo_name = "__REPO_NAME__"
+project_kind = "__PROJECT_KIND__"
+layout = "__LAYOUT__"
+package_name = "__PACKAGE_NAME__"
+crate_dir = "__CRATE_DIR__"
+python_package = "__PY_PACKAGE__"
+package_manifest_path = "__PACKAGE_MANIFEST_PATH__"
+changelog_path = "__CHANGELOG_PATH__"
+

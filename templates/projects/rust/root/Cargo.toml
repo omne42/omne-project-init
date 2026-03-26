@@ -1,0 +1,11 @@
+[package]
+name = "__PACKAGE_NAME__"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = []
+exclude = ["tools/repo-check"]
+resolver = "3"
+
+[dependencies]

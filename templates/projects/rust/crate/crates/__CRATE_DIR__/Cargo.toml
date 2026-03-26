@@ -1,0 +1,7 @@
+[package]
+name = "__PACKAGE_NAME__"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+
