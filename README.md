@@ -111,6 +111,8 @@ cargo run -- init /path/to/new-repo --project nodejs
 cargo run -- manifest /path/to/new-repo --project rust --layout crate
 ```
 
+`--force` 现在只用于安全重生成已经由 `omne-project-init` 生成过、且仍保留有效 `repo-check.toml` 的仓库。它会先清理旧 scaffold 的受管文件，再写入新模板，避免不同 project/layout 的旧生成物被混在一起。
+
 生成后常用命令：
 
 ```bash

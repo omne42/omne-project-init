@@ -5,6 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use serde_json::Value as JsonValue;
+use toml::Value as TomlValue;
+
 const ALLOWED_BRANCH_PREFIXES: &[&str] = &[
     "feat/",
     "fix/",
@@ -389,13 +392,13 @@ fn maybe_mark_executable(path: &Path) -> Result<(), String> {
 
 fn run_pre_commit(repo_root: &Path, config: &RepoConfig) -> Result<(), String> {
     validate_branch_name(repo_root)?;
-    let staged = collect_staged_state(repo_root)?;
+    let staged = collect_staged_state(repo_root, config)?;
     if staged.paths.is_empty() {
         return Ok(());
     }
 
     require_major_bump_override(repo_root, config)?;
-    validate_allowed_changelog_paths(config, &staged)?;
+    validate_allowed_changelog_paths(repo_root, config, &staged)?;
     validate_required_changelog_not_deleted(config, &staged)?;
     validate_changelog_update(repo_root, config, &staged)?;
     validate_not_changelog_only(&staged)?;
@@ -426,14 +429,22 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
 
     match (config.project_kind, config.layout) {
         (ProjectKind::Rust, Layout::Root) => {
-            let manifest = repo_root.join("Cargo.toml");
+            let manifest = repo_root.join(&config.package_manifest_path);
             if !manifest.is_file() {
-                return Err(
-                    "repo-check: rust root layout requires Cargo.toml at repo root".to_string(),
-                );
+                return Err(format!(
+                    "repo-check: rust root layout requires a package manifest at {}",
+                    config.package_manifest_path
+                ));
             }
         }
         (ProjectKind::Rust, Layout::Crate) => {
+            let primary_manifest = repo_root.join(&config.package_manifest_path);
+            if !primary_manifest.is_file() {
+                return Err(format!(
+                    "repo-check: rust crate layout requires the primary package manifest at {}",
+                    config.package_manifest_path
+                ));
+            }
             let crate_dirs = discover_crate_dirs(repo_root)?;
             if crate_dirs.is_empty() {
                 return Err(
@@ -443,13 +454,19 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
             }
         }
         (ProjectKind::Python, Layout::Root) => {
-            if !repo_root.join("pyproject.toml").is_file() {
-                return Err("repo-check: python root layout requires pyproject.toml".to_string());
+            if !repo_root.join(&config.package_manifest_path).is_file() {
+                return Err(format!(
+                    "repo-check: python root layout requires a package manifest at {}",
+                    config.package_manifest_path
+                ));
             }
         }
         (ProjectKind::Nodejs, Layout::Root) => {
-            if !repo_root.join("package.json").is_file() {
-                return Err("repo-check: nodejs root layout requires package.json".to_string());
+            if !repo_root.join(&config.package_manifest_path).is_file() {
+                return Err(format!(
+                    "repo-check: nodejs root layout requires a package manifest at {}",
+                    config.package_manifest_path
+                ));
             }
         }
         _ => {}
@@ -480,7 +497,7 @@ fn validate_branch_name(repo_root: &Path) -> Result<(), String> {
     ))
 }
 
-fn collect_staged_state(repo_root: &Path) -> Result<StagedState, String> {
+fn collect_staged_state(repo_root: &Path, config: &RepoConfig) -> Result<StagedState, String> {
     let changed = git_output(
         repo_root,
         &[
@@ -502,14 +519,17 @@ fn collect_staged_state(repo_root: &Path) -> Result<StagedState, String> {
     let deleted_paths: BTreeSet<String> = split_null_terminated(&deleted).into_iter().collect();
     let changelog_paths: Vec<String> = paths
         .iter()
-        .filter(|path| is_changelog_path(path))
+        .filter(|path| is_changelog_path(config, path))
         .cloned()
         .collect();
-    let non_changelog_count = paths.iter().filter(|path| !is_changelog_path(path)).count();
+    let non_changelog_count = paths
+        .iter()
+        .filter(|path| !is_changelog_path(config, path))
+        .count();
     let crate_dirs_with_non_changelog_changes = paths
         .iter()
-        .filter(|path| !is_changelog_path(path))
-        .filter_map(|path| crate_dir_for_path(path))
+        .filter(|path| !is_changelog_path(config, path))
+        .filter_map(|path| active_crate_dir_for_path(repo_root, path))
         .collect();
 
     Ok(StagedState {
@@ -528,8 +548,8 @@ fn split_null_terminated(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn is_changelog_path(path: &str) -> bool {
-    path == "CHANGELOG.md" || (path.starts_with("crates/") && path.ends_with("/CHANGELOG.md"))
+fn is_changelog_path(config: &RepoConfig, path: &str) -> bool {
+    path == config.changelog_path || is_crate_changelog_path(path)
 }
 
 fn crate_dir_for_path(path: &str) -> Option<String> {
@@ -542,7 +562,71 @@ fn crate_dir_for_path(path: &str) -> Option<String> {
     None
 }
 
+fn crate_dir_from_changelog_path(path: &str) -> Option<String> {
+    if !is_crate_changelog_path(path) {
+        return None;
+    }
+    crate_dir_for_path(path)
+}
+
+fn crate_manifest_path(crate_dir: &str) -> String {
+    format!("crates/{crate_dir}/Cargo.toml")
+}
+
+fn active_crate_dir_for_path(repo_root: &Path, path: &str) -> Option<String> {
+    let crate_dir = crate_dir_for_path(path)?;
+    repo_root
+        .join(crate_manifest_path(&crate_dir))
+        .is_file()
+        .then_some(crate_dir)
+}
+
+fn crate_manifest_deleted(staged: &StagedState, crate_dir: &str) -> bool {
+    staged
+        .deleted_paths
+        .contains(&crate_manifest_path(crate_dir))
+}
+
+fn path_belongs_to_deleted_crate(staged: &StagedState, path: &str) -> bool {
+    crate_dir_for_path(path).is_some_and(|crate_dir| crate_manifest_deleted(staged, &crate_dir))
+}
+
+fn is_allowed_deleted_changelog_path(staged: &StagedState, path: &str) -> bool {
+    crate_dir_from_changelog_path(path)
+        .is_some_and(|crate_dir| crate_manifest_deleted(staged, &crate_dir))
+}
+
+fn is_allowed_crate_layout_changelog_path(
+    repo_root: &Path,
+    staged: &StagedState,
+    config: &RepoConfig,
+    path: &str,
+) -> bool {
+    if path == config.changelog_path {
+        return true;
+    }
+    if !is_crate_changelog_path(path) {
+        return false;
+    }
+    crate_dir_from_changelog_path(path).is_some_and(|crate_dir| {
+        repo_root.join(crate_manifest_path(&crate_dir)).is_file()
+            || crate_manifest_deleted(staged, &crate_dir)
+    })
+}
+
+fn requires_primary_changelog(repo_root: &Path, staged: &StagedState) -> bool {
+    staged
+        .paths
+        .iter()
+        .filter(|path| !path.ends_with("CHANGELOG.md"))
+        .any(|path| {
+            active_crate_dir_for_path(repo_root, path).is_none()
+                && !path_belongs_to_deleted_crate(staged, path)
+        })
+}
+
 fn validate_allowed_changelog_paths(
+    repo_root: &Path,
     config: &RepoConfig,
     staged: &StagedState,
 ) -> Result<(), String> {
@@ -551,41 +635,33 @@ fn validate_allowed_changelog_paths(
             let disallowed: Vec<&String> = staged
                 .changelog_paths
                 .iter()
-                .filter(|path| path.as_str() != "CHANGELOG.md")
+                .filter(|path| path.as_str() != config.changelog_path)
                 .collect();
             if disallowed.is_empty() {
                 return Ok(());
             }
             Err(format!(
-                "repo-check: this repository uses a single root changelog.\n\nOnly `CHANGELOG.md` is allowed.\n\nDisallowed staged changelog paths:\n{}",
+                "repo-check: this repository uses a single configured changelog.\n\nOnly `{}` is allowed.\n\nDisallowed staged changelog paths:\n{}",
+                config.changelog_path,
                 bullet_list(disallowed.iter().map(|path| path.as_str()))
             ))
         }
         Layout::Crate => {
-            let disallowed_root: Vec<&String> = staged
-                .changelog_paths
-                .iter()
-                .filter(|path| {
-                    path.as_str() == "CHANGELOG.md" && !staged.deleted_paths.contains(path.as_str())
-                })
-                .collect();
             let invalid: Vec<&String> = staged
                 .changelog_paths
                 .iter()
-                .filter(|path| path.as_str() != "CHANGELOG.md")
-                .filter(|path| !is_crate_changelog_path(path))
+                .filter(|path| {
+                    !is_allowed_crate_layout_changelog_path(repo_root, staged, config, path)
+                })
                 .collect();
-            if disallowed_root.is_empty() && invalid.is_empty() {
+            if invalid.is_empty() {
                 return Ok(());
             }
-            let mut details: Vec<&str> = disallowed_root
-                .iter()
-                .chain(invalid.iter())
-                .map(|value| value.as_str())
-                .collect();
+            let mut details: Vec<&str> = invalid.iter().map(|value| value.as_str()).collect();
             details.sort();
             Err(format!(
-                "repo-check: this repository keeps changelogs inside each crate.\n\nRoot CHANGELOG.md is not a valid changelog entry point here.\n\nDisallowed staged changelog paths:\n{}",
+                "repo-check: this repository keeps changelogs inside real crate packages, with root or governance changes owned by `{}`.\n\nDisallowed staged changelog paths:\n{}",
+                config.changelog_path,
                 bullet_list(details.into_iter())
             ))
         }
@@ -604,13 +680,15 @@ fn validate_required_changelog_not_deleted(
         Layout::Root => staged
             .deleted_paths
             .iter()
-            .filter(|path| path.as_str() == "CHANGELOG.md")
+            .filter(|path| path.as_str() == config.changelog_path)
             .map(|path| path.as_str())
             .collect(),
         Layout::Crate => staged
             .deleted_paths
             .iter()
-            .filter(|path| is_crate_changelog_path(path))
+            .filter(|path| {
+                is_changelog_path(config, path) && !is_allowed_deleted_changelog_path(staged, path)
+            })
             .map(|path| path.as_str())
             .collect(),
     };
@@ -634,25 +712,35 @@ fn validate_changelog_update(
             if staged
                 .changelog_paths
                 .iter()
-                .any(|path| path == "CHANGELOG.md")
+                .any(|path| path == &config.changelog_path)
             {
                 return Ok(());
             }
-            Err(
-                "repo-check: a root-package repository must update CHANGELOG.md in the same commit."
-                    .to_string(),
-            )
+            Err(format!(
+                "repo-check: a root-package repository must update {} in the same commit.",
+                config.changelog_path
+            ))
         }
         Layout::Crate => {
-            if staged.crate_dirs_with_non_changelog_changes.is_empty() {
+            let mut required_paths = BTreeSet::new();
+            for crate_dir in &staged.crate_dirs_with_non_changelog_changes {
+                required_paths.insert(format!("crates/{crate_dir}/CHANGELOG.md"));
+            }
+            for crate_dir in workspace_version_inheriting_crate_dirs(repo_root, staged)? {
+                required_paths.insert(format!("crates/{crate_dir}/CHANGELOG.md"));
+            }
+            if requires_primary_changelog(repo_root, staged) {
+                required_paths.insert(config.changelog_path.clone());
+            }
+
+            if required_paths.is_empty() {
                 return Ok(());
             }
 
             let mut missing_files = Vec::new();
             let mut missing_updates = Vec::new();
 
-            for crate_dir in &staged.crate_dirs_with_non_changelog_changes {
-                let changelog_path = format!("crates/{crate_dir}/CHANGELOG.md");
+            for changelog_path in required_paths {
                 if !repo_root.join(&changelog_path).is_file()
                     && !staged
                         .changelog_paths
@@ -673,13 +761,13 @@ fn validate_changelog_update(
 
             if !missing_files.is_empty() {
                 return Err(format!(
-                    "repo-check: every crate-package must maintain its own changelog.\n\nCreate the missing changelog file(s):\n{}",
+                    "repo-check: every changed crate-package or governance surface must maintain an owned changelog.\n\nCreate the missing changelog file(s):\n{}",
                     bullet_list(missing_files.iter().map(|path| path.as_str()))
                 ));
             }
             if !missing_updates.is_empty() {
                 return Err(format!(
-                    "repo-check: every changed crate-package must update its own changelog.\n\nStage an [Unreleased] entry in:\n{}",
+                    "repo-check: every changed crate-package or governance surface must update its owned changelog.\n\nStage an [Unreleased] entry in:\n{}",
                     bullet_list(missing_updates.iter().map(|path| path.as_str()))
                 ));
             }
@@ -716,12 +804,12 @@ fn validate_released_sections_immutable(
         Layout::Root => staged
             .changelog_paths
             .iter()
-            .filter(|path| path.as_str() == "CHANGELOG.md")
+            .filter(|path| path.as_str() == config.changelog_path)
             .collect(),
         Layout::Crate => staged
             .changelog_paths
             .iter()
-            .filter(|path| is_crate_changelog_path(path))
+            .filter(|path| is_allowed_crate_layout_changelog_path(repo_root, staged, config, path))
             .collect(),
     };
 
@@ -834,11 +922,13 @@ fn major_change_targets(
 fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionTarget>, String> {
     match (config.project_kind, config.layout) {
         (ProjectKind::Rust, Layout::Root) => {
-            let head_text = git_show_text(repo_root, "HEAD:Cargo.toml")?;
-            let index_text = git_show_text(repo_root, ":Cargo.toml")?;
+            let head_text =
+                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
+            let index_text =
+                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
             Ok(vec![VersionTarget {
                 label: config.package_name.clone(),
-                path: "Cargo.toml".to_string(),
+                path: config.package_manifest_path.clone(),
                 old_version: cargo_package_version(head_text.as_deref(), None).0,
                 new_version: cargo_package_version(index_text.as_deref(), None).0,
             }])
@@ -875,21 +965,25 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
             Ok(targets)
         }
         (ProjectKind::Python, Layout::Root) => {
-            let head_text = git_show_text(repo_root, "HEAD:pyproject.toml")?;
-            let index_text = git_show_text(repo_root, ":pyproject.toml")?;
+            let head_text =
+                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
+            let index_text =
+                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
             Ok(vec![VersionTarget {
                 label: config.package_name.clone(),
-                path: "pyproject.toml".to_string(),
+                path: config.package_manifest_path.clone(),
                 old_version: pyproject_version(head_text.as_deref()),
                 new_version: pyproject_version(index_text.as_deref()),
             }])
         }
         (ProjectKind::Nodejs, Layout::Root) => {
-            let head_text = git_show_text(repo_root, "HEAD:package.json")?;
-            let index_text = git_show_text(repo_root, ":package.json")?;
+            let head_text =
+                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
+            let index_text =
+                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
             Ok(vec![VersionTarget {
                 label: config.package_name.clone(),
-                path: "package.json".to_string(),
+                path: config.package_manifest_path.clone(),
                 old_version: package_json_version(head_text.as_deref()),
                 new_version: package_json_version(index_text.as_deref()),
             }])
@@ -931,70 +1025,51 @@ fn format_version_target(target: &VersionTarget) -> String {
 }
 
 fn cargo_workspace_version(text: Option<&str>) -> Option<String> {
-    cargo_section_value(text, "workspace.package", "version")
+    cargo_toml(text)?
+        .get("workspace")?
+        .get("package")?
+        .get("version")?
+        .as_str()
+        .map(|value| value.to_string())
 }
 
 fn cargo_package_version(
     text: Option<&str>,
     workspace_version: Option<&str>,
 ) -> (Option<String>, bool) {
-    let Some(text) = text else {
+    let Some(parsed) = cargo_toml(text) else {
         return (None, false);
     };
-    let mut current_section = "";
-    for raw_line in text.lines() {
-        let line = strip_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            current_section = &line[1..line.len() - 1];
-            continue;
-        }
-        if current_section != "package" {
-            continue;
-        }
-        if let Some(version) = cargo_assignment_value(line, "version") {
-            return (Some(version), false);
-        }
-        let compact: String = line
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect();
-        if compact == "version.workspace=true" {
-            return (workspace_version.map(|value| value.to_string()), true);
-        }
+    let Some(package) = parsed.get("package") else {
+        return (None, false);
+    };
+    let Some(version) = package.get("version") else {
+        return (None, false);
+    };
+    if let Some(version) = version.as_str() {
+        return (Some(version.to_string()), false);
+    }
+    if version
+        .as_table()
+        .and_then(|table| table.get("workspace"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        return (workspace_version.map(|value| value.to_string()), true);
     }
     (None, false)
 }
 
 fn cargo_section_value(text: Option<&str>, section: &str, key: &str) -> Option<String> {
-    let text = text?;
-    let mut current_section = "";
-    for raw_line in text.lines() {
-        let line = strip_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            current_section = &line[1..line.len() - 1];
-            continue;
-        }
-        if current_section == section
-            && let Some(value) = cargo_assignment_value(line, key)
-        {
-            return Some(value);
-        }
+    let mut current = cargo_toml(text)?;
+    for segment in section.split('.') {
+        current = current.get(segment)?.clone();
     }
-    None
+    current.get(key)?.as_str().map(|value| value.to_string())
 }
 
-fn cargo_assignment_value(line: &str, key: &str) -> Option<String> {
-    let (left, right) = line.split_once('=')?;
-    if left.trim() != key {
-        return None;
-    }
-    parse_quoted_value(right.trim())
+fn cargo_toml(text: Option<&str>) -> Option<TomlValue> {
+    toml::from_str(text?).ok()
 }
 
 fn pyproject_version(text: Option<&str>) -> Option<String> {
@@ -1002,16 +1077,11 @@ fn pyproject_version(text: Option<&str>) -> Option<String> {
 }
 
 fn package_json_version(text: Option<&str>) -> Option<String> {
-    let text = text?;
-    for raw_line in text.lines() {
-        let line = raw_line.trim().trim_end_matches(',');
-        if !line.starts_with("\"version\"") {
-            continue;
-        }
-        let (_, value) = line.split_once(':')?;
-        return parse_quoted_value(value.trim());
-    }
-    None
+    serde_json::from_str::<JsonValue>(text?)
+        .ok()?
+        .get("version")?
+        .as_str()
+        .map(|value| value.to_string())
 }
 
 fn discover_crate_dirs(repo_root: &Path) -> Result<Vec<String>, String> {
@@ -1043,6 +1113,42 @@ fn discover_crate_dirs(repo_root: &Path) -> Result<Vec<String>, String> {
         }
     }
     crate_dirs.sort();
+    Ok(crate_dirs)
+}
+
+fn workspace_version_inheriting_crate_dirs(
+    repo_root: &Path,
+    staged: &StagedState,
+) -> Result<BTreeSet<String>, String> {
+    if !staged.paths.iter().any(|path| path == "Cargo.toml") {
+        return Ok(BTreeSet::new());
+    }
+
+    let head_root = git_show_text(repo_root, "HEAD:Cargo.toml")?;
+    let index_root = git_show_text(repo_root, ":Cargo.toml")?;
+    if cargo_workspace_version(head_root.as_deref())
+        == cargo_workspace_version(index_root.as_deref())
+    {
+        return Ok(BTreeSet::new());
+    }
+
+    let head_workspace_version = cargo_workspace_version(head_root.as_deref());
+    let index_workspace_version = cargo_workspace_version(index_root.as_deref());
+    let mut crate_dirs = BTreeSet::new();
+
+    for crate_dir in discover_crate_dirs(repo_root)? {
+        let path = format!("crates/{crate_dir}/Cargo.toml");
+        let head_text = git_show_text(repo_root, &format!("HEAD:{path}"))?;
+        let index_text = git_show_text(repo_root, &format!(":{path}"))?;
+        let head_inherits =
+            cargo_package_version(head_text.as_deref(), head_workspace_version.as_deref()).1;
+        let index_inherits =
+            cargo_package_version(index_text.as_deref(), index_workspace_version.as_deref()).1;
+        if head_inherits || index_inherits {
+            crate_dirs.insert(crate_dir);
+        }
+    }
+
     Ok(crate_dirs)
 }
 

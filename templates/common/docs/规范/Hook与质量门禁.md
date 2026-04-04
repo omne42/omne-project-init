@@ -15,7 +15,7 @@
 
 - `githooks/` 只负责把控制权交给 `repo-check`
 - `tools/repo-check/` 承担 branch、commit、changelog 和 workspace gate
-- `repo-check.toml` 记录当前仓库的 project kind / layout / manifest / changelog 路径
+- `repo-check.toml` 记录当前仓库的 project kind / layout / manifest / changelog 路径，并作为这些路径检查的 source of truth
 
 ## `pre-commit` 当前做什么
 
@@ -27,9 +27,16 @@
 4. 校验 changelog 路径是否符合当前 layout。
 5. 校验实际改动是否同步更新了正确的 changelog。
 6. 拒绝 changelog-only commit。
-7. 默认拒绝删除当前 layout 下生效的 changelog。
+7. 默认拒绝删除当前仍然活跃的 changelog。
 8. 默认只允许修改 `[Unreleased]`。
 9. 运行 project-kind 对应的本地 gate。
+
+补充说明：
+
+- crate layout 下，root 级治理代码、workspace 根文档和其他不属于活跃 crate 的改动，会归属到 `repo-check.toml` 配置的主 changelog 路径
+- `crates/<name>/` 下只有真实 crate 才会被当作 crate-package；共享目录不会自动变成 changelog owner
+- 如果一个 crate 被整体删除，对应的 crate changelog 可以随之删除
+- Rust crate layout 下，如果 workspace 根版本变更导致继承 `version.workspace = true` 的 crate 有效版本变化，相关 crate 的 changelog 也必须同步更新
 
 ## `commit-msg` 当前做什么
 
@@ -70,4 +77,3 @@ Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 
 2. external binary
 
 repo-local manifest 默认是 `tools/repo-check/Cargo.toml`，也可以通过 `OMNE_REPO_CHECK_MANIFEST` 指向其他位置。
-

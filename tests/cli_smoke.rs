@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -209,6 +209,228 @@ fn generated_rust_repo_check_git_flow_passes() {
     );
 }
 
+#[test]
+fn init_ignores_template_build_artifacts_with_non_utf8_bytes() {
+    let _guard = template_fixture_lock()
+        .lock()
+        .expect("template fixture lock poisoned");
+    let fixture_root = repo_template_root()
+        .join("common")
+        .join("tools")
+        .join("repo-check")
+        .join("target")
+        .join("test-fixture");
+    let _cleanup = PathCleanup::new(fixture_root.clone());
+    fs::create_dir_all(&fixture_root).expect("failed to create template fixture directory");
+    fs::write(fixture_root.join("bad.bin"), [0xff, 0xfe, 0xfd])
+        .expect("failed to write non-UTF8 fixture");
+
+    let repo = init_repo("artifact-skip", &["--project", "rust", "--layout", "crate"]);
+    assert!(
+        repo.path().join("tools/repo-check/src/main.rs").is_file(),
+        "generated repo-check source was not written"
+    );
+    assert!(
+        !repo.path().join("tools/repo-check/target").exists(),
+        "template build artifacts leaked into generated scaffold"
+    );
+}
+
+#[test]
+fn force_reinit_replaces_previous_scaffold_instead_of_mixing_layouts() {
+    let repo = TempDir::new("force-reinit");
+    run_cli([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--no-git-init",
+    ]);
+    assert!(repo.path().join("Cargo.toml").is_file());
+    assert!(repo.path().join("crates").is_dir());
+
+    run_cli([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--force",
+        "--no-git-init",
+    ]);
+
+    assert!(repo.path().join("pyproject.toml").is_file());
+    assert!(repo.path().join("tests/test_basic.py").is_file());
+    assert!(!repo.path().join("Cargo.toml").exists());
+    assert!(!repo.path().join("crates").exists());
+}
+
+#[test]
+fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
+    let repo = init_repo("node-config-paths", &["--project", "nodejs"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    fs::create_dir_all(repo.path().join("config")).expect("failed to create config dir");
+    fs::create_dir_all(repo.path().join("docs")).expect("failed to create docs dir");
+    fs::rename(
+        repo.path().join("package.json"),
+        repo.path().join("config/package.json"),
+    )
+    .expect("failed to relocate package.json");
+    fs::rename(
+        repo.path().join("CHANGELOG.md"),
+        repo.path().join("docs/CHANGELOG.md"),
+    )
+    .expect("failed to relocate changelog");
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        "package_manifest_path = \"package.json\"",
+        "package_manifest_path = \"config/package.json\"",
+    );
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        "changelog_path = \"CHANGELOG.md\"",
+        "changelog_path = \"docs/CHANGELOG.md\"",
+    );
+    fs::write(
+        repo.path().join("config/package.json"),
+        "{\"name\":\"node-config-paths\",\"version\":\"2.0.0\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write package.json");
+    append_to_file(
+        &repo.path().join("docs/CHANGELOG.md"),
+        "\n- note configured root manifest and changelog path move\n",
+    );
+
+    git_add_all(repo.path());
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("Only `CHANGELOG.md` is allowed"),
+        "configured changelog path was ignored:\n{output}"
+    );
+    assert!(
+        !output.contains("nodejs root layout requires package.json"),
+        "configured manifest path was ignored:\n{output}"
+    );
+}
+
+#[test]
+fn generated_repo_check_requires_primary_changelog_for_root_changes_in_crate_layout() {
+    let repo = init_repo(
+        "crate-root-change",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
+    append_to_file(&repo.path().join("README.md"), "\nroot governance change\n");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains(&primary_changelog),
+        "expected configured primary changelog requirement, got:\n{output}"
+    );
+
+    append_to_file(
+        &repo.path().join(&primary_changelog),
+        "\n- note root governance change\n",
+    );
+    git_add_all(repo.path());
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
+fn generated_repo_check_does_not_invent_fake_crates_from_shared_dirs() {
+    let repo = init_repo(
+        "crate-shared-dir",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
+    let shared_dir = repo.path().join("crates/shared");
+    fs::create_dir_all(&shared_dir).expect("failed to create shared dir");
+    fs::write(shared_dir.join("README.md"), "shared helper docs\n")
+        .expect("failed to write shared doc");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains(&primary_changelog),
+        "expected root/shared changes to map to primary changelog, got:\n{output}"
+    );
+    assert!(
+        !output.contains("crates/shared/CHANGELOG.md"),
+        "shared directory was incorrectly treated as a crate:\n{output}"
+    );
+}
+
+#[test]
+fn generated_repo_check_requires_all_inheriting_crate_changelogs_for_workspace_version_change() {
+    let repo = init_repo(
+        "workspace-version-bump",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    add_workspace_crate(repo.path(), "support-lib");
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    replace_in_file(
+        &repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"0.1.1\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
+    assert!(
+        output.contains(&primary_changelog),
+        "missing primary crate changelog in output:\n{output}"
+    );
+    assert!(
+        output.contains("crates/support-lib/CHANGELOG.md"),
+        "missing secondary crate changelog in output:\n{output}"
+    );
+}
+
+#[test]
+fn generated_repo_check_allows_deleting_a_crate_with_its_changelog() {
+    let repo = init_repo(
+        "crate-delete-legal",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    add_workspace_crate(repo.path(), "support-lib");
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    fs::remove_dir_all(repo.path().join("crates/support-lib"))
+        .expect("failed to delete secondary crate");
+    append_to_file(
+        &repo
+            .path()
+            .join(format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()))),
+        "\n- note remove support-lib crate\n",
+    );
+    git_add_all(repo.path());
+
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
 fn init_repo(prefix: &str, args: &[&str]) -> TempDir {
     let repo = TempDir::new(prefix);
     let mut cli_args = vec![
@@ -259,6 +481,32 @@ fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
     run_ok("generated repo-check", &mut command)
 }
 
+fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
+    let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--quiet")
+        .arg("--target-dir")
+        .arg(shared_generated_target_dir())
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--");
+
+    let mut saw_repo_root = false;
+    for arg in args {
+        if *arg == "--repo-root" {
+            saw_repo_root = true;
+        }
+        command.arg(arg);
+    }
+    if !saw_repo_root {
+        command.arg("--repo-root").arg(repo_root);
+    }
+
+    run_fail("generated repo-check", &mut command)
+}
+
 fn git_init(repo_root: &Path) {
     let init_with_branch = Command::new("git")
         .arg("-C")
@@ -287,6 +535,107 @@ fn git_init(repo_root: &Path) {
         .expect("failed to execute `git branch -m main`");
 }
 
+fn git_config_identity(repo_root: &Path) {
+    run_ok(
+        "git config user.name",
+        Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["config", "user.name", "Smoke Test"]),
+    );
+    run_ok(
+        "git config user.email",
+        Command::new("git").arg("-C").arg(repo_root).args([
+            "config",
+            "user.email",
+            "smoke@example.com",
+        ]),
+    );
+}
+
+fn git_add_all(repo_root: &Path) {
+    run_ok(
+        "git add -A",
+        Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["add", "-A"]),
+    );
+}
+
+fn git_commit_all(repo_root: &Path, message: &str) {
+    git_add_all(repo_root);
+    run_ok(
+        "git commit",
+        Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["commit", "-m", message]),
+    );
+}
+
+fn replace_in_file(path: &Path, from: &str, to: &str) {
+    let text = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let replaced = text.replace(from, to);
+    assert_ne!(
+        text,
+        replaced,
+        "replace_in_file did not find expected text in {}",
+        path.display()
+    );
+    fs::write(path, replaced)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+}
+
+fn append_to_file(path: &Path, suffix: &str) {
+    let mut text = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    text.push_str(suffix);
+    fs::write(path, text)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+}
+
+fn add_workspace_crate(repo_root: &Path, crate_name: &str) {
+    let source = repo_root.join("crates").join(repo_slug(repo_root));
+    let destination = repo_root.join("crates").join(crate_name);
+    copy_dir_all(&source, &destination);
+
+    let source_slug = repo_slug(repo_root).to_string();
+    replace_in_file(&destination.join("Cargo.toml"), &source_slug, crate_name);
+    replace_in_file(&destination.join("CHANGELOG.md"), &source_slug, crate_name);
+}
+
+fn copy_dir_all(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap_or_else(|error| {
+        panic!(
+            "failed to create copy destination {}: {error}",
+            destination.display()
+        )
+    });
+
+    for entry in fs::read_dir(source)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", source.display()))
+    {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!("failed to read entry in {}: {error}", source.display())
+        });
+        let entry_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry_path.is_dir() {
+            copy_dir_all(&entry_path, &destination_path);
+        } else {
+            fs::copy(&entry_path, &destination_path).unwrap_or_else(|error| {
+                panic!(
+                    "failed to copy {} -> {}: {error}",
+                    entry_path.display(),
+                    destination_path.display()
+                )
+            });
+        }
+    }
+}
+
 fn assert_manifest_contains(output: &str, expected_entries: &[&str]) {
     for entry in expected_entries {
         assert!(
@@ -309,6 +658,18 @@ fn run_ok(label: &str, command: &mut Command) -> String {
         output.status,
         render_output(&output)
     );
+}
+
+fn run_fail(label: &str, command: &mut Command) -> String {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{label}: failed to execute command: {error}"));
+    assert!(
+        !output.status.success(),
+        "{label}: command unexpectedly succeeded\n{}",
+        render_output(&output)
+    );
+    render_output(&output)
 }
 
 fn render_output(output: &Output) -> String {
@@ -337,6 +698,31 @@ fn shared_generated_target_dir() -> &'static Path {
         fs::create_dir_all(&path).expect("failed to create shared generated target dir");
         path
     })
+}
+
+fn repo_template_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
+}
+
+fn template_fixture_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct PathCleanup {
+    path: PathBuf,
+}
+
+impl PathCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for PathCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn has_python() -> bool {
