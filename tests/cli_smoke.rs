@@ -546,6 +546,7 @@ fn generated_repo_check_allows_deleting_a_crate_with_its_changelog() {
 
     fs::remove_dir_all(repo.path().join("crates/support-lib"))
         .expect("failed to delete secondary crate");
+    remove_workspace_member(repo.path(), "support-lib");
     append_to_file(
         &repo
             .path()
@@ -890,6 +891,21 @@ fn append_workspace_member(repo_root: &Path, crate_name: &str) {
         &format!("{insert_after}\"crates/{crate_name}\", "),
         1,
     );
+    fs::write(&cargo_toml, updated)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", cargo_toml.display()));
+}
+
+fn remove_workspace_member(repo_root: &Path, crate_name: &str) {
+    let cargo_toml = repo_root.join("Cargo.toml");
+    let text = fs::read_to_string(&cargo_toml)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", cargo_toml.display()));
+    let member = format!("\"crates/{crate_name}\", ");
+    assert!(
+        text.contains(&member),
+        "workspace member {member} not found in {}",
+        cargo_toml.display()
+    );
+    let updated = text.replacen(&member, "", 1);
     fs::write(&cargo_toml, updated)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", cargo_toml.display()));
 }
