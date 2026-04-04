@@ -70,6 +70,15 @@ enum CliCommand {
     Manifest(InitConfig),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NameKind {
+    Repo,
+    RustPackage,
+    CrateDir,
+    PythonImportPackage,
+    DistributionPackage,
+}
+
 #[derive(Debug)]
 struct InitConfig {
     target_dir: PathBuf,
@@ -200,17 +209,17 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
             "--repo-name" => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                repo_name = Some(slugify(value)?);
+                repo_name = Some(value.to_string());
             }
             "--package-name" => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                package_name = Some(slugify(value)?);
+                package_name = Some(value.to_string());
             }
             "--crate-dir" => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                crate_dir = Some(slugify(value)?);
+                crate_dir = Some(value.to_string());
             }
             "--force" => force = true,
             "--no-git-init" => git_init = false,
@@ -227,18 +236,24 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
     }
 
     let target_dir = target_dir.ok_or_else(usage)?;
-    let inferred_repo_name = repo_name.unwrap_or_else(|| {
-        slugify(
-            target_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("new-project"),
-        )
-        .unwrap_or_else(|_| "new-project".to_string())
-    });
-    let package_name = package_name.unwrap_or_else(|| inferred_repo_name.clone());
-    let crate_dir = crate_dir.unwrap_or_else(|| package_name.clone());
-    let python_package = package_name.replace('-', "_");
+    let target_basename = target_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("new-project");
+    let inferred_repo_name = match repo_name {
+        Some(value) => normalize_name(&value, NameKind::Repo)?,
+        None => normalize_name(target_basename, NameKind::Repo)
+            .unwrap_or_else(|_| "new-project".to_string()),
+    };
+    let package_name = match package_name {
+        Some(value) => normalize_package_name(&value, project_kind)?,
+        None => derive_default_package_name(project_kind, &inferred_repo_name)?,
+    };
+    let crate_dir = match crate_dir {
+        Some(value) => normalize_name(&value, NameKind::CrateDir)?,
+        None => package_name.clone(),
+    };
+    let python_package = normalize_name(&package_name, NameKind::PythonImportPackage)?;
 
     let layout = match layout {
         Some(Layout::Crate) if project_kind != ProjectKind::Rust => {
@@ -277,22 +292,73 @@ fn usage() -> String {
     "usage: omne-project-init <init|manifest> <target_dir> [--project rust|python|nodejs] [--layout root|crate] [--repo-name NAME] [--package-name NAME] [--crate-dir NAME] [--force] [--no-git-init] [--no-setup-hooks]".to_string()
 }
 
-fn slugify(value: &str) -> Result<String, String> {
+fn derive_default_package_name(
+    project_kind: ProjectKind,
+    repo_name: &str,
+) -> Result<String, String> {
+    normalize_package_name(repo_name, project_kind)
+}
+
+fn normalize_package_name(value: &str, project_kind: ProjectKind) -> Result<String, String> {
+    match project_kind {
+        ProjectKind::Rust => normalize_name(value, NameKind::RustPackage),
+        ProjectKind::Python | ProjectKind::Nodejs => {
+            normalize_name(value, NameKind::DistributionPackage)
+        }
+    }
+}
+
+fn normalize_name(value: &str, kind: NameKind) -> Result<String, String> {
+    let delimiter = match kind {
+        NameKind::PythonImportPackage => '_',
+        NameKind::Repo
+        | NameKind::RustPackage
+        | NameKind::CrateDir
+        | NameKind::DistributionPackage => '-',
+    };
+    let mut normalized = normalize_ascii_name(value, delimiter)?;
+
+    match kind {
+        NameKind::RustPackage => {
+            if normalized
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+            {
+                normalized = format!("pkg-{normalized}");
+            }
+        }
+        NameKind::PythonImportPackage => {
+            if normalized
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+            {
+                normalized = format!("pkg_{normalized}");
+            }
+        }
+        NameKind::Repo | NameKind::CrateDir | NameKind::DistributionPackage => {}
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_ascii_name(value: &str, delimiter: char) -> Result<String, String> {
     let lowered = value.trim().to_lowercase().replace(['_', ' '], "-");
     let mut out = String::new();
-    let mut last_dash = false;
+    let mut last_delimiter = false;
     for character in lowered.chars() {
         if character.is_ascii_lowercase() || character.is_ascii_digit() {
             out.push(character);
-            last_dash = false;
+            last_delimiter = false;
             continue;
         }
-        if !last_dash {
-            out.push('-');
-            last_dash = true;
+        if !last_delimiter {
+            out.push(delimiter);
+            last_delimiter = true;
         }
     }
-    let result = out.trim_matches('-').to_string();
+    let result = out.trim_matches(delimiter).to_string();
     if result.is_empty() {
         return Err("name must contain ASCII letters or digits".to_string());
     }
@@ -818,6 +884,27 @@ mod tests {
 
         let rendered_paths: Vec<String> = files.into_iter().map(|(_, relative)| relative).collect();
         assert_eq!(rendered_paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn rust_package_names_gain_safe_prefix_when_input_starts_with_digits() {
+        assert_eq!(
+            normalize_name("123-demo", NameKind::RustPackage).expect("normalize rust package"),
+            "pkg-123-demo"
+        );
+        assert_eq!(
+            normalize_name("123-demo", NameKind::CrateDir).expect("normalize crate dir"),
+            "123-demo"
+        );
+    }
+
+    #[test]
+    fn python_import_names_gain_safe_prefix_when_input_starts_with_digits() {
+        assert_eq!(
+            normalize_name("123-demo", NameKind::PythonImportPackage)
+                .expect("normalize python package"),
+            "pkg_123_demo"
+        );
     }
 
     fn test_config(target_dir: &Path) -> InitConfig {

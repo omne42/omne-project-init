@@ -210,6 +210,91 @@ fn generated_rust_repo_check_git_flow_passes() {
 }
 
 #[test]
+fn rust_names_are_normalized_per_domain_for_numeric_defaults_and_flags() {
+    let sandbox = TempDir::new("numeric-rust-names");
+
+    let derived_target = sandbox.path().join("123-derived-rust");
+    run_cli([
+        "init",
+        derived_target.to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--no-git-init",
+    ]);
+    assert!(
+        derived_target
+            .join("crates/pkg-123-derived-rust/Cargo.toml")
+            .is_file(),
+        "derived Rust package name was not normalized to a buildable crate path"
+    );
+    let derived_manifest =
+        fs::read_to_string(derived_target.join("crates/pkg-123-derived-rust/Cargo.toml"))
+            .expect("failed to read derived Rust manifest");
+    assert!(derived_manifest.contains("name = \"pkg-123-derived-rust\""));
+    run_generated_repo_check(&derived_target, &["workspace", "local"]);
+
+    let explicit_target = sandbox.path().join("rust-explicit");
+    run_cli([
+        "init",
+        explicit_target.to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--package-name",
+        "123-explicit-rust",
+        "--crate-dir",
+        "123-explicit-dir",
+        "--no-git-init",
+    ]);
+    assert!(
+        explicit_target
+            .join("crates/123-explicit-dir/Cargo.toml")
+            .is_file(),
+        "explicit crate dir should use its own normalization contract"
+    );
+    let explicit_manifest =
+        fs::read_to_string(explicit_target.join("crates/123-explicit-dir/Cargo.toml"))
+            .expect("failed to read explicit Rust manifest");
+    assert!(explicit_manifest.contains("name = \"pkg-123-explicit-rust\""));
+    let repo_check = fs::read_to_string(explicit_target.join("repo-check.toml"))
+        .expect("failed to read explicit repo-check config");
+    assert!(repo_check.contains("package_name = \"pkg-123-explicit-rust\""));
+    assert!(repo_check.contains("crate_dir = \"123-explicit-dir\""));
+    run_generated_repo_check(&explicit_target, &["workspace", "local"]);
+}
+
+#[test]
+fn python_import_package_name_is_normalized_separately_from_distribution_name() {
+    let sandbox = TempDir::new("numeric-python-names");
+    let target = sandbox.path().join("python-explicit");
+    run_cli([
+        "init",
+        target.to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--package-name",
+        "123-python-app",
+        "--no-git-init",
+    ]);
+
+    let pyproject =
+        fs::read_to_string(target.join("pyproject.toml")).expect("failed to read pyproject.toml");
+    assert!(pyproject.contains("name = \"123-python-app\""));
+    assert!(
+        pyproject.contains("packages = [\"pkg_123_python_app\"]"),
+        "python import package should use a valid identifier"
+    );
+    assert!(target.join("pkg_123_python_app/__init__.py").is_file());
+
+    if has_python() {
+        run_generated_repo_check(&target, &["workspace", "local"]);
+    }
+}
+
+#[test]
 fn init_ignores_template_build_artifacts_with_non_utf8_bytes() {
     let _guard = template_fixture_lock()
         .lock()
