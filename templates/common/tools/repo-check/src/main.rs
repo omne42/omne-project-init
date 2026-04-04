@@ -897,11 +897,8 @@ fn major_change_targets(
     let targets = version_targets(repo_root, config)?;
     let mut changed = Vec::new();
     for target in targets {
-        let old_parts = parse_semver(target.old_version.as_deref())?;
-        let new_parts = parse_semver(target.new_version.as_deref())?;
-
-        let old_major = old_parts.map(|parts| parts.0);
-        let new_major = new_parts.map(|parts| parts.0);
+        let old_major = parse_version_major(target.old_version.as_deref())?;
+        let new_major = parse_version_major(target.new_version.as_deref())?;
 
         if old_major == Some(0) || new_major == Some(0) {
             continue;
@@ -992,26 +989,27 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
     }
 }
 
-fn parse_semver(version: Option<&str>) -> Result<Option<(u64, u64, u64)>, String> {
+fn parse_version_major(version: Option<&str>) -> Result<Option<u64>, String> {
     let Some(version) = version else {
         return Ok(None);
     };
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3 {
+    let release = version
+        .rsplit_once('!')
+        .map(|(_, release)| release)
+        .unwrap_or(version);
+    let digits: String = release
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
         return Err(format!(
-            "repo-check: unsupported non-semver version: {version}"
+            "repo-check: unsupported version without numeric major segment: {version}"
         ));
     }
-    let major = parts[0]
+    let major = digits
         .parse::<u64>()
-        .map_err(|_| format!("repo-check: invalid semver major segment: {version}"))?;
-    let minor = parts[1]
-        .parse::<u64>()
-        .map_err(|_| format!("repo-check: invalid semver minor segment: {version}"))?;
-    let patch = parts[2]
-        .parse::<u64>()
-        .map_err(|_| format!("repo-check: invalid semver patch segment: {version}"))?;
-    Ok(Some((major, minor, patch)))
+        .map_err(|_| format!("repo-check: invalid version major segment: {version}"))?;
+    Ok(Some(major))
 }
 
 fn format_version_target(target: &VersionTarget) -> String {

@@ -431,6 +431,131 @@ fn generated_repo_check_allows_deleting_a_crate_with_its_changelog() {
     run_generated_repo_check(repo.path(), &["pre-commit"]);
 }
 
+#[test]
+fn generated_repo_check_detects_major_bump_for_workspace_table_inheritance() {
+    let repo = init_repo(
+        "workspace-table-major",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    replace_in_file(
+        &repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0-alpha.1\"",
+    );
+    replace_in_file(
+        &repo
+            .path()
+            .join("crates")
+            .join(repo_slug(repo.path()))
+            .join("Cargo.toml"),
+        "version.workspace = true",
+        "version = { workspace = true }",
+    );
+    git_commit_all(
+        repo.path(),
+        "chore(repo): prepare workspace version baseline",
+    );
+
+    replace_in_file(
+        &repo.path().join("Cargo.toml"),
+        "version = \"1.0.0-alpha.1\"",
+        "version = \"2.0.0-alpha.1\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected workspace-inherited major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "workspace table form or prerelease parsing was rejected:\n{output}"
+    );
+}
+
+#[test]
+fn generated_python_repo_check_accepts_prerelease_major_versions() {
+    let repo = init_repo("python-prerelease-major", &["--project", "python"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    replace_in_file(
+        &repo.path().join("pyproject.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0rc1\"",
+    );
+    git_commit_all(
+        repo.path(),
+        "chore(repo): prepare python prerelease baseline",
+    );
+
+    replace_in_file(
+        &repo.path().join("pyproject.toml"),
+        "version = \"1.0.0rc1\"",
+        "version = \"2.0.0rc1\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected python prerelease major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "python prerelease version was rejected:\n{output}"
+    );
+}
+
+#[test]
+fn generated_node_repo_check_uses_top_level_prerelease_version() {
+    let repo = init_repo("node-top-level-version", &["--project", "nodejs"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    fs::write(
+        repo.path().join("package.json"),
+        concat!(
+            "{\n",
+            "  \"name\": \"node-top-level-version\",\n",
+            "  \"publishConfig\": { \"version\": \"9.9.9\" },\n",
+            "  \"version\": \"1.0.0-beta.1\",\n",
+            "  \"type\": \"module\"\n",
+            "}\n"
+        ),
+    )
+    .expect("failed to write baseline package.json");
+    git_commit_all(repo.path(), "chore(repo): prepare node prerelease baseline");
+
+    fs::write(
+        repo.path().join("package.json"),
+        concat!(
+            "{\n",
+            "  \"name\": \"node-top-level-version\",\n",
+            "  \"publishConfig\": { \"version\": \"1.0.0-beta.1\" },\n",
+            "  \"version\": \"2.0.0-beta.1\",\n",
+            "  \"type\": \"module\"\n",
+            "}\n"
+        ),
+    )
+    .expect("failed to write updated package.json");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected node top-level major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "node prerelease version was rejected:\n{output}"
+    );
+}
+
 fn init_repo(prefix: &str, args: &[&str]) -> TempDir {
     let repo = TempDir::new(prefix);
     let mut cli_args = vec![
