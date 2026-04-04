@@ -86,7 +86,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let crate_workspace = fs::read_to_string(rust_crate.path().join("Cargo.toml"))
         .expect("failed to read crate workspace Cargo.toml");
-    assert!(crate_workspace.contains("exclude = [\"tools/repo-check\"]"));
+    assert!(crate_workspace.contains("members = [\"crates/*\", \"tools/repo-check\"]"));
     assert!(crate_workspace.contains("resolver = \"3\""));
 
     let crate_manifest = fs::read_to_string(
@@ -109,7 +109,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
     let root_manifest = fs::read_to_string(rust_root.path().join("Cargo.toml"))
         .expect("failed to read root Cargo.toml");
     assert!(root_manifest.contains("edition = \"2024\""));
-    assert!(root_manifest.contains("exclude = [\"tools/repo-check\"]"));
+    assert!(root_manifest.contains("members = [\"tools/repo-check\"]"));
 
     let repo_check_manifest =
         fs::read_to_string(rust_root.path().join("tools/repo-check/Cargo.toml"))
@@ -130,6 +130,45 @@ fn generated_rust_repo_check_workspace_local_passes_for_root_and_crate() {
 
     run_generated_repo_check(rust_crate.path(), &["workspace", "local"]);
     run_generated_repo_check(rust_root.path(), &["workspace", "local"]);
+}
+
+#[test]
+fn generated_rust_workspaces_include_repo_check_member() {
+    let rust_crate = init_repo(
+        "rust-crate-workspace-member",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    let rust_root = init_repo(
+        "rust-root-workspace-member",
+        &["--project", "rust", "--layout", "root"],
+    );
+
+    let crate_metadata = cargo_metadata(rust_crate.path());
+    assert!(
+        crate_metadata.contains("/tools/repo-check/Cargo.toml"),
+        "crate layout metadata did not include tools/repo-check:\n{crate_metadata}"
+    );
+
+    let root_metadata = cargo_metadata(rust_root.path());
+    assert!(
+        root_metadata.contains("/tools/repo-check/Cargo.toml"),
+        "root layout metadata did not include tools/repo-check:\n{root_metadata}"
+    );
+}
+
+#[test]
+fn generated_rust_repo_check_workspace_ci_passes_for_root_and_crate() {
+    let rust_crate = init_repo(
+        "rust-crate-ci-smoke",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    let rust_root = init_repo(
+        "rust-root-ci-smoke",
+        &["--project", "rust", "--layout", "root"],
+    );
+
+    run_generated_repo_check(rust_crate.path(), &["workspace", "ci"]);
+    run_generated_repo_check(rust_root.path(), &["workspace", "ci"]);
 }
 
 #[test]
@@ -715,6 +754,18 @@ fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
     }
 
     run_fail("generated repo-check", &mut command)
+}
+
+fn cargo_metadata(repo_root: &Path) -> String {
+    run_ok(
+        "cargo metadata",
+        Command::new("cargo")
+            .arg("metadata")
+            .arg("--format-version")
+            .arg("1")
+            .arg("--no-deps")
+            .current_dir(repo_root),
+    )
 }
 
 fn git_init(repo_root: &Path) {

@@ -56,6 +56,7 @@
 - `cargo check --workspace --all-targets --all-features`
 - `cargo test --workspace --all-features`
 - `ci` 额外执行 `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Rust 模板生成的 workspace 会把 `tools/repo-check` 纳入 member，所以这些 gate 会直接覆盖治理工具本身
 
 ### python
 

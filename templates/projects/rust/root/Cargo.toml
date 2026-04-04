@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = []
-exclude = ["tools/repo-check"]
+members = ["tools/repo-check"]
 resolver = "3"
 
 [dependencies]
