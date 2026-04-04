@@ -18,7 +18,7 @@
 如果你要改项目本身，优先从这些位置建立上下文：
 
 - 主代码入口：`__PRIMARY_SOURCE_PATH__`
-- 主要测试入口：`__PRIMARY_TEST_PATH__`
+- 主要验证命令：`__PRIMARY_VALIDATION_COMMAND__`
 - 包清单：`__PACKAGE_MANIFEST_PATH__`
 - changelog：`__CHANGELOG_PATH__`
 
@@ -34,4 +34,3 @@
 - `githooks/` 只保留薄包装；真正检查逻辑放进 Rust 的 `tools/repo-check/`。
 - 规则如果要长期生效，优先写成可执行检查，而不是只写口头约定。
 - Windows、Linux、macOS 都是目标环境，避免引入 bash-only 的核心逻辑。
-

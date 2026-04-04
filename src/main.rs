@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 const TEMPLATE_VERSION: &str = "0.1.0";
@@ -127,14 +127,12 @@ impl InitConfig {
         }
     }
 
-    fn primary_test_path(&self) -> String {
+    fn primary_validation_command(&self) -> String {
         match (self.project_kind, self.layout) {
-            (ProjectKind::Rust, Layout::Root) => "src/main.rs".to_string(),
-            (ProjectKind::Rust, Layout::Crate) => {
-                format!("crates/{}/src/lib.rs", self.crate_dir)
-            }
-            (ProjectKind::Python, _) => "tests/test_basic.py".to_string(),
-            (ProjectKind::Nodejs, _) => "test/basic.test.js".to_string(),
+            (ProjectKind::Rust, Layout::Root) => "cargo test".to_string(),
+            (ProjectKind::Rust, Layout::Crate) => "cargo test --workspace".to_string(),
+            (ProjectKind::Python, _) => "pytest".to_string(),
+            (ProjectKind::Nodejs, _) => "npm test".to_string(),
         }
     }
 }
@@ -443,7 +441,7 @@ fn collect_template_files(
         let relative_source = entry
             .strip_prefix(template_root)
             .map_err(|error| format!("failed to relativize {}: {error}", entry.display()))?;
-        let relative_output = render_path(relative_source, config);
+        let relative_output = render_path(relative_source, config)?;
         if !seen.insert(relative_output.clone()) {
             return Err(format!(
                 "duplicate rendered template path detected: {relative_output}"
@@ -460,9 +458,32 @@ fn should_skip_template_dir(path: &Path) -> bool {
         .is_some_and(|name| IGNORED_TEMPLATE_DIR_NAMES.contains(&name))
 }
 
-fn render_path(path: &Path, config: &InitConfig) -> String {
-    let text = path.to_string_lossy();
-    render_string(&text, config)
+fn render_path(path: &Path, config: &InitConfig) -> Result<String, String> {
+    Ok(render_string(
+        &normalized_relative_template_path(path)?,
+        config,
+    ))
+}
+
+fn normalized_relative_template_path(path: &Path) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                parts.push(part.to_str().ok_or_else(|| {
+                    format!("template path must be valid UTF-8: {}", path.display())
+                })?)
+            }
+            _ => {
+                return Err(format!(
+                    "template path must stay within the template root: {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(parts.join("/"))
 }
 
 fn render_string(value: &str, config: &InitConfig) -> String {
@@ -478,7 +499,10 @@ fn render_string(value: &str, config: &InitConfig) -> String {
         .replace("__CHANGELOG_PATH__", &config.changelog_path())
         .replace("__PACKAGE_MANIFEST_PATH__", &config.package_manifest_path())
         .replace("__PRIMARY_SOURCE_PATH__", &config.primary_source_path())
-        .replace("__PRIMARY_TEST_PATH__", &config.primary_test_path())
+        .replace(
+            "__PRIMARY_VALIDATION_COMMAND__",
+            &config.primary_validation_command(),
+        )
 }
 
 fn prepare_target_dir(config: &InitConfig) -> Result<(), String> {
@@ -738,14 +762,22 @@ fn write_files(config: &InitConfig) -> Result<Vec<String>, String> {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
         }
-        let content = fs::read_to_string(&source_path)
+        let content = fs::read(&source_path)
             .map_err(|error| format!("failed to read {}: {error}", source_path.display()))?;
-        fs::write(&destination, render_string(&content, config))
+        let rendered = render_template_bytes(content, config);
+        fs::write(&destination, rendered)
             .map_err(|error| format!("failed to write {}: {error}", destination.display()))?;
         maybe_mark_executable(&destination, &relative_output)?;
         written.push(relative_output);
     }
     Ok(written)
+}
+
+fn render_template_bytes(content: Vec<u8>, config: &InitConfig) -> Vec<u8> {
+    match String::from_utf8(content) {
+        Ok(text) => render_string(&text, config).into_bytes(),
+        Err(error) => error.into_bytes(),
+    }
 }
 
 fn maybe_mark_executable(path: &Path, relative_output: &str) -> Result<(), String> {
@@ -908,6 +940,21 @@ mod tests {
                 .expect("normalize python package"),
             "pkg_123_demo"
         );
+    }
+
+    #[test]
+    fn render_path_normalizes_template_paths_to_forward_slashes() {
+        let config = test_config(Path::new("."));
+        let rendered = render_path(Path::new("nested/path/__CRATE_DIR__/Cargo.toml"), &config)
+            .expect("render template path");
+        assert_eq!(rendered, "nested/path/demo-repo/Cargo.toml");
+    }
+
+    #[test]
+    fn render_template_bytes_keeps_binary_assets_verbatim() {
+        let config = test_config(Path::new("."));
+        let rendered = render_template_bytes(vec![0xff, 0xfe, 0xfd], &config);
+        assert_eq!(rendered, vec![0xff, 0xfe, 0xfd]);
     }
 
     fn test_config(target_dir: &Path) -> InitConfig {

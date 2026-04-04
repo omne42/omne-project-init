@@ -438,11 +438,32 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
             }
         }
         (ProjectKind::Rust, Layout::Crate) => {
+            let expected_manifest_path = crate_manifest_path(&config.crate_dir);
+            if config.package_manifest_path != expected_manifest_path {
+                return Err(format!(
+                    "repo-check: crate layout config drift: crate_dir `{}` must use package manifest {} (got {}).",
+                    config.crate_dir, expected_manifest_path, config.package_manifest_path
+                ));
+            }
+            let expected_changelog_path = crate_changelog_path(&config.crate_dir);
+            if config.changelog_path != expected_changelog_path {
+                return Err(format!(
+                    "repo-check: crate layout config drift: crate_dir `{}` must use changelog {} (got {}).",
+                    config.crate_dir, expected_changelog_path, config.changelog_path
+                ));
+            }
             let primary_manifest = repo_root.join(&config.package_manifest_path);
             if !primary_manifest.is_file() {
                 return Err(format!(
                     "repo-check: rust crate layout requires the primary package manifest at {}",
                     config.package_manifest_path
+                ));
+            }
+            let primary_changelog = repo_root.join(&config.changelog_path);
+            if !primary_changelog.is_file() {
+                return Err(format!(
+                    "repo-check: rust crate layout requires the primary crate changelog at {}",
+                    config.changelog_path
                 ));
             }
             let crate_dirs = discover_crate_dirs(repo_root)?;
@@ -451,6 +472,15 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
                     "repo-check: rust crate layout requires at least one crates/*/Cargo.toml"
                         .to_string(),
                 );
+            }
+            if !crate_dirs
+                .iter()
+                .any(|crate_dir| crate_dir == &config.crate_dir)
+            {
+                return Err(format!(
+                    "repo-check: crate layout config drift: crate_dir `{}` is not an active crate under crates/.",
+                    config.crate_dir
+                ));
             }
         }
         (ProjectKind::Python, Layout::Root) => {
@@ -571,6 +601,10 @@ fn crate_dir_from_changelog_path(path: &str) -> Option<String> {
 
 fn crate_manifest_path(crate_dir: &str) -> String {
     format!("crates/{crate_dir}/Cargo.toml")
+}
+
+fn crate_changelog_path(crate_dir: &str) -> String {
+    format!("crates/{crate_dir}/CHANGELOG.md")
 }
 
 fn active_crate_dir_for_path(repo_root: &Path, path: &str) -> Option<String> {
@@ -908,7 +942,7 @@ fn major_change_targets(
             continue;
         }
         if let (Some(old_major), Some(new_major)) = (old_major, new_major)
-            && new_major > old_major
+            && new_major != old_major
         {
             changed.push(target);
         }

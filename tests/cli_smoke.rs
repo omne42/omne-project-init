@@ -117,6 +117,14 @@ fn init_writes_expected_metadata_for_rust_layouts() {
         fs::read_to_string(rust_root.path().join("tools/repo-check/Cargo.toml"))
             .expect("failed to read generated repo-check Cargo.toml");
     assert!(repo_check_manifest.contains("edition = \"2024\""));
+
+    let crate_agents = fs::read_to_string(rust_crate.path().join("AGENTS.md"))
+        .expect("failed to read crate AGENTS.md");
+    assert!(crate_agents.contains("主要验证命令：`cargo test --workspace`"));
+
+    let root_agents =
+        fs::read_to_string(rust_root.path().join("AGENTS.md")).expect("failed to read AGENTS.md");
+    assert!(root_agents.contains("主要验证命令：`cargo test`"));
 }
 
 #[test]
@@ -393,6 +401,24 @@ fn force_reinit_replaces_previous_scaffold_instead_of_mixing_layouts() {
 }
 
 #[test]
+fn generated_agents_use_validation_commands_instead_of_fake_test_paths() {
+    let rust_root = init_repo(
+        "rust-root-agents",
+        &["--project", "rust", "--layout", "root"],
+    );
+    let python = init_repo("python-agents", &["--project", "python"]);
+
+    let rust_agents =
+        fs::read_to_string(rust_root.path().join("AGENTS.md")).expect("failed to read AGENTS");
+    assert!(rust_agents.contains("主要验证命令：`cargo test`"));
+    assert!(!rust_agents.contains("主要验证入口"));
+
+    let python_agents =
+        fs::read_to_string(python.path().join("AGENTS.md")).expect("failed to read AGENTS");
+    assert!(python_agents.contains("主要验证命令：`pytest`"));
+}
+
+#[test]
 fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
     let repo = init_repo("node-config-paths", &["--project", "nodejs"]);
     git_init(repo.path());
@@ -534,6 +560,34 @@ fn generated_repo_check_requires_all_inheriting_crate_changelogs_for_workspace_v
 }
 
 #[test]
+fn generated_repo_check_rejects_crate_layout_config_drift() {
+    let repo = init_repo(
+        "crate-config-drift",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    add_workspace_crate(repo.path(), "support-lib");
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        &format!(
+            "package_manifest_path = \"crates/{}/Cargo.toml\"",
+            repo_slug(repo.path())
+        ),
+        "package_manifest_path = \"crates/support-lib/Cargo.toml\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("crate layout config drift"),
+        "expected config drift validation, got:\n{output}"
+    );
+}
+
+#[test]
 fn generated_repo_check_allows_deleting_a_crate_with_its_changelog() {
     let repo = init_repo(
         "crate-delete-legal",
@@ -556,6 +610,33 @@ fn generated_repo_check_allows_deleting_a_crate_with_its_changelog() {
     git_add_all(repo.path());
 
     run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
+fn generated_repo_check_rejects_major_version_downgrade() {
+    let repo = init_repo("node-major-downgrade", &["--project", "nodejs"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    replace_in_file(
+        &repo.path().join("package.json"),
+        "\"version\": \"0.1.0\"",
+        "\"version\": \"2.0.0\"",
+    );
+    git_commit_all(repo.path(), "chore(repo): prepare major downgrade baseline");
+
+    replace_in_file(
+        &repo.path().join("package.json"),
+        "\"version\": \"2.0.0\"",
+        "\"version\": \"1.0.0\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected major downgrade gate, got:\n{output}"
+    );
 }
 
 #[test]
