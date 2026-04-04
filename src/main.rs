@@ -363,10 +363,7 @@ fn collect_template_files(
     files: &mut Vec<(PathBuf, String)>,
     seen: &mut std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(current)
-        .map_err(|error| format!("failed to read {}: {error}", current.display()))?
-        .filter_map(|entry| entry.ok().map(|value| value.path()))
-        .collect();
+    let mut entries = read_dir_entry_paths(current)?;
     entries.sort();
 
     for entry in entries {
@@ -441,9 +438,8 @@ fn prepare_target_dir(config: &InitConfig) -> Result<(), String> {
 }
 
 fn existing_target_entries(target_dir: &Path) -> Result<Vec<String>, String> {
-    let mut existing: Vec<String> = fs::read_dir(target_dir)
-        .map_err(|error| format!("failed to read {}: {error}", target_dir.display()))?
-        .filter_map(|entry| entry.ok())
+    let mut existing: Vec<String> = read_dir_entries(target_dir)?
+        .into_iter()
         .map(|entry| entry.path())
         .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(".git"))
         .filter_map(|path| {
@@ -524,10 +520,7 @@ fn prune_empty_generated_directories(
         if !directory.exists() {
             continue;
         }
-        let is_empty = fs::read_dir(&directory)
-            .map_err(|error| format!("failed to read {}: {error}", directory.display()))?
-            .next()
-            .is_none();
+        let is_empty = directory_is_empty(&directory)?;
         if is_empty {
             fs::remove_dir(&directory)
                 .map_err(|error| format!("failed to remove {}: {error}", directory.display()))?;
@@ -646,6 +639,26 @@ fn parse_quoted_value(value: &str) -> Option<String> {
         return None;
     }
     Some(out)
+}
+
+fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    let mut entries = Vec::new();
+    for entry in
+        fs::read_dir(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?
+    {
+        let entry =
+            entry.map_err(|error| format!("failed to read {} entry: {error}", path.display()))?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn read_dir_entry_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(read_dir_entries(path)?.into_iter().map(|entry| entry.path()).collect())
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, String> {
+    Ok(read_dir_entries(path)?.is_empty())
 }
 
 fn write_files(config: &InitConfig) -> Result<Vec<String>, String> {

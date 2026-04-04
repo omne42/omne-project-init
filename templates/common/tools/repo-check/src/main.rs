@@ -1412,23 +1412,23 @@ fn git_output(repo_root: &Path, args: &[&str], allow_failure: bool) -> Result<St
         return Ok(String::new());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() { stderr } else { stdout };
-    Err(format!(
-        "repo-check: git command failed: git -C {} {}\n\n{}",
-        repo_root.display(),
-        args.join(" "),
-        detail
-    ))
+    Err(render_git_failure(repo_root, args, &output))
 }
 
 fn git_show_text(repo_root: &Path, spec: &str) -> Result<Option<String>, String> {
-    let output = run_git(repo_root, &["show", spec])?;
-    if !output.status.success() {
-        return Ok(None);
+    match parse_git_show_spec(spec) {
+        GitShowSpec::HeadPath(path) if !git_head_path_exists(repo_root, path)? => return Ok(None),
+        GitShowSpec::IndexPath(path) if !git_index_path_exists(repo_root, path)? => {
+            return Ok(None)
+        }
+        _ => {}
     }
-    Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+
+    let output = run_git(repo_root, &["show", spec])?;
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()));
+    }
+    Err(render_git_failure(repo_root, &["show", spec], &output))
 }
 
 fn run_git(repo_root: &Path, args: &[&str]) -> Result<Output, String> {
@@ -1439,9 +1439,204 @@ fn run_git(repo_root: &Path, args: &[&str]) -> Result<Output, String> {
         .map_err(|error| format!("repo-check: failed to execute git {:?}: {error}", args))
 }
 
+fn render_git_failure(repo_root: &Path, args: &[&str], output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+    format!(
+        "repo-check: git command failed: git -C {} {}\n\n{}",
+        repo_root.display(),
+        args.join(" "),
+        detail
+    )
+}
+
+enum GitShowSpec<'a> {
+    HeadPath(&'a str),
+    IndexPath(&'a str),
+    Other,
+}
+
+fn parse_git_show_spec(spec: &str) -> GitShowSpec<'_> {
+    if let Some(path) = spec.strip_prefix("HEAD:") {
+        return GitShowSpec::HeadPath(path);
+    }
+    if let Some(path) = spec.strip_prefix(':') {
+        return GitShowSpec::IndexPath(path);
+    }
+    GitShowSpec::Other
+}
+
+fn git_head_path_exists(repo_root: &Path, path: &str) -> Result<bool, String> {
+    let head_output = run_git(repo_root, &["rev-parse", "--verify", "HEAD"])?;
+    if !head_output.status.success() {
+        if git_missing_head(&head_output) {
+            return Ok(false);
+        }
+        return Err(render_git_failure(
+            repo_root,
+            &["rev-parse", "--verify", "HEAD"],
+            &head_output,
+        ));
+    }
+
+    let object_spec = format!("HEAD:{path}");
+    let output = run_git(repo_root, &["cat-file", "-e", &object_spec])?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if git_missing_head_path(&output) {
+        return Ok(false);
+    }
+    Err(render_git_failure(
+        repo_root,
+        &["cat-file", "-e", &object_spec],
+        &output,
+    ))
+}
+
+fn git_index_path_exists(repo_root: &Path, path: &str) -> Result<bool, String> {
+    let output = run_git(repo_root, &["ls-files", "--error-unmatch", "--", path])?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if git_missing_index_path(&output) {
+        return Ok(false);
+    }
+    Err(render_git_failure(
+        repo_root,
+        &["ls-files", "--error-unmatch", "--", path],
+        &output,
+    ))
+}
+
+fn git_missing_head(output: &Output) -> bool {
+    let detail = git_output_detail(output);
+    detail.contains("Needed a single revision") || detail.contains("invalid object name 'HEAD'")
+}
+
+fn git_missing_head_path(output: &Output) -> bool {
+    git_output_detail(output).contains("Not a valid object name HEAD:")
+}
+
+fn git_missing_index_path(output: &Output) -> bool {
+    git_output_detail(output).contains("did not match any file(s) known to git")
+}
+
+fn git_output_detail(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 fn bullet_list(values: impl Iterator<Item = impl AsRef<str>>) -> String {
     values
         .map(|value| format!("- {}", value.as_ref()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn git_show_text_returns_none_for_missing_head_and_index_paths() {
+        let sandbox = TempDir::new("git-show-missing");
+        run_ok(
+            sandbox.path(),
+            &["init", "-b", "main"],
+            "failed to initialize git repo",
+        );
+        run_ok(
+            sandbox.path(),
+            &["config", "user.name", "Smoke Test"],
+            "failed to configure git user.name",
+        );
+        run_ok(
+            sandbox.path(),
+            &["config", "user.email", "smoke@example.com"],
+            "failed to configure git user.email",
+        );
+
+        fs::write(sandbox.path().join("tracked.txt"), "tracked\n").expect("write tracked file");
+        run_ok(sandbox.path(), &["add", "tracked.txt"], "failed to stage tracked file");
+        run_ok(
+            sandbox.path(),
+            &["commit", "-m", "feat(repo): initial"],
+            "failed to create initial commit",
+        );
+
+        assert_eq!(
+            git_show_text(sandbox.path(), "HEAD:missing.txt").expect("head lookup should succeed"),
+            None
+        );
+        assert_eq!(
+            git_show_text(sandbox.path(), ":missing.txt").expect("index lookup should succeed"),
+            None
+        );
+    }
+
+    #[test]
+    fn git_show_text_reports_non_repo_git_errors() {
+        let sandbox = TempDir::new("git-show-error");
+        let error = git_show_text(sandbox.path(), "HEAD:missing.txt")
+            .expect_err("non-git directory should fail");
+        assert!(
+            error.contains("git command failed"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("rev-parse --verify HEAD"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn run_ok(repo_root: &Path, args: &[&str], label: &str) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("{label}: failed to execute git: {error}"));
+        assert!(
+            output.status.success(),
+            "{label}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos();
+            let path =
+                env::temp_dir().join(format!("repo-check-{prefix}-{nanos}-{unique}"));
+            fs::create_dir_all(&path).expect("failed to create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
