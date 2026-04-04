@@ -86,7 +86,9 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let crate_workspace = fs::read_to_string(rust_crate.path().join("Cargo.toml"))
         .expect("failed to read crate workspace Cargo.toml");
-    assert!(crate_workspace.contains("members = [\"crates/*\", \"tools/repo-check\"]"));
+    assert!(crate_workspace.contains(&format!(
+        "members = [\"crates/{rust_crate_slug}\", \"tools/repo-check\"]"
+    )));
     assert!(crate_workspace.contains("resolver = \"3\""));
 
     let crate_manifest = fs::read_to_string(
@@ -865,6 +867,31 @@ fn add_workspace_crate(repo_root: &Path, crate_name: &str) {
     let source_slug = repo_slug(repo_root).to_string();
     replace_in_file(&destination.join("Cargo.toml"), &source_slug, crate_name);
     replace_in_file(&destination.join("CHANGELOG.md"), &source_slug, crate_name);
+    append_workspace_member(repo_root, crate_name);
+}
+
+fn append_workspace_member(repo_root: &Path, crate_name: &str) {
+    let cargo_toml = repo_root.join("Cargo.toml");
+    let text = fs::read_to_string(&cargo_toml)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", cargo_toml.display()));
+    let insert_after = "members = [";
+    let marker = format!("\"crates/{crate_name}\"");
+    assert!(
+        text.contains(insert_after),
+        "workspace members array not found in {}",
+        cargo_toml.display()
+    );
+    if text.contains(&marker) {
+        return;
+    }
+
+    let updated = text.replacen(
+        insert_after,
+        &format!("{insert_after}\"crates/{crate_name}\", "),
+        1,
+    );
+    fs::write(&cargo_toml, updated)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", cargo_toml.display()));
 }
 
 fn copy_dir_all(source: &Path, destination: &Path) {
