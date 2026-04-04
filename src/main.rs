@@ -720,7 +720,10 @@ fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
 }
 
 fn read_dir_entry_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
-    Ok(read_dir_entries(path)?.into_iter().map(|entry| entry.path()).collect())
+    Ok(read_dir_entries(path)?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect())
 }
 
 fn directory_is_empty(path: &Path) -> Result<bool, String> {

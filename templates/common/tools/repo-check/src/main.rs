@@ -1419,7 +1419,7 @@ fn git_show_text(repo_root: &Path, spec: &str) -> Result<Option<String>, String>
     match parse_git_show_spec(spec) {
         GitShowSpec::HeadPath(path) if !git_head_path_exists(repo_root, path)? => return Ok(None),
         GitShowSpec::IndexPath(path) if !git_index_path_exists(repo_root, path)? => {
-            return Ok(None)
+            return Ok(None);
         }
         _ => {}
     }
@@ -1564,7 +1564,11 @@ mod tests {
         );
 
         fs::write(sandbox.path().join("tracked.txt"), "tracked\n").expect("write tracked file");
-        run_ok(sandbox.path(), &["add", "tracked.txt"], "failed to stage tracked file");
+        run_ok(
+            sandbox.path(),
+            &["add", "tracked.txt"],
+            "failed to stage tracked file",
+        );
         run_ok(
             sandbox.path(),
             &["commit", "-m", "feat(repo): initial"],
@@ -1623,8 +1627,7 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock before unix epoch")
                 .as_nanos();
-            let path =
-                env::temp_dir().join(format!("repo-check-{prefix}-{nanos}-{unique}"));
+            let path = env::temp_dir().join(format!("repo-check-{prefix}-{nanos}-{unique}"));
             fs::create_dir_all(&path).expect("failed to create temp dir");
             Self { path }
         }
