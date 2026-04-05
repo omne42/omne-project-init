@@ -8,4 +8,6 @@
 2. `docs/architecture/system-boundaries.md`
 3. `docs/architecture/source-layout.md`
 
+如果你想看仓库自检和 CI 入口，回到 `README.md` 和 `.github/workflows/ci.yml`。
+
 如果你想看最终生成出的内容，继续回到 `templates/` 和 `README.md`。
