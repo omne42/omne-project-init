@@ -9,6 +9,14 @@ fi
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+is_absolute_manifest_path() {
+  case "$1" in
+    /* | [A-Za-z]:/* | [A-Za-z]:\\* | //*) return 0 ;;
+    \\\\*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 run_with_manifest() {
   manifest_path="$1"
   if [ ! -f "$manifest_path" ]; then
@@ -23,10 +31,11 @@ if [ -n "$manifest_override" ]; then
     echo "commit-msg: cargo is required when OMNE_REPO_CHECK_MANIFEST is set." >&2
     exit 1
   fi
-  case "$manifest_override" in
-    /*) run_with_manifest "$manifest_override" ;;
-    *) run_with_manifest "$repo_root/$manifest_override" ;;
-  esac
+  if is_absolute_manifest_path "$manifest_override"; then
+    run_with_manifest "$manifest_override"
+  else
+    run_with_manifest "$repo_root/$manifest_override"
+  fi
   echo "commit-msg: OMNE_REPO_CHECK_MANIFEST does not point to a manifest: $manifest_override" >&2
   exit 1
 fi
