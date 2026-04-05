@@ -101,6 +101,14 @@ fn init_writes_expected_metadata_for_rust_layouts() {
     .expect("failed to read crate package Cargo.toml");
     assert!(crate_manifest.contains("edition = \"2024\""));
     assert!(crate_manifest.contains("version.workspace = true"));
+    assert!(
+        rust_crate
+            .path()
+            .join("crates")
+            .join(rust_crate_slug)
+            .join("tests/basic.rs")
+            .is_file()
+    );
 
     let root_repo_check = fs::read_to_string(rust_root.path().join("repo-check.toml"))
         .expect("failed to read root repo-check.toml");
@@ -112,6 +120,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
         .expect("failed to read root Cargo.toml");
     assert!(root_manifest.contains("edition = \"2024\""));
     assert!(root_manifest.contains("members = [\"tools/repo-check\"]"));
+    assert!(rust_root.path().join("tests/basic.rs").is_file());
 
     let repo_check_manifest =
         fs::read_to_string(rust_root.path().join("tools/repo-check/Cargo.toml"))
@@ -259,11 +268,11 @@ fn generated_rust_repo_check_git_flow_passes() {
 }
 
 #[test]
-fn rust_names_are_normalized_per_domain_for_numeric_defaults_and_flags() {
+fn rust_package_names_reject_numeric_defaults_and_flags() {
     let sandbox = TempDir::new("numeric-rust-names");
 
     let derived_target = sandbox.path().join("123-derived-rust");
-    run_cli([
+    let derived_output = run_cli_failure([
         "init",
         derived_target.to_string_lossy().as_ref(),
         "--project",
@@ -272,20 +281,11 @@ fn rust_names_are_normalized_per_domain_for_numeric_defaults_and_flags() {
         "crate",
         "--no-git-init",
     ]);
-    assert!(
-        derived_target
-            .join("crates/pkg-123-derived-rust/Cargo.toml")
-            .is_file(),
-        "derived Rust package name was not normalized to a buildable crate path"
-    );
-    let derived_manifest =
-        fs::read_to_string(derived_target.join("crates/pkg-123-derived-rust/Cargo.toml"))
-            .expect("failed to read derived Rust manifest");
-    assert!(derived_manifest.contains("name = \"pkg-123-derived-rust\""));
-    run_generated_repo_check(&derived_target, &["workspace", "local"]);
+    assert!(derived_output.contains("derived Rust package name is invalid"));
+    assert!(derived_output.contains("--package-name"));
 
     let explicit_target = sandbox.path().join("rust-explicit");
-    run_cli([
+    let explicit_output = run_cli_failure([
         "init",
         explicit_target.to_string_lossy().as_ref(),
         "--project",
@@ -298,28 +298,25 @@ fn rust_names_are_normalized_per_domain_for_numeric_defaults_and_flags() {
         "123-explicit-dir",
         "--no-git-init",
     ]);
-    assert!(
-        explicit_target
-            .join("crates/123-explicit-dir/Cargo.toml")
-            .is_file(),
-        "explicit crate dir should use its own normalization contract"
-    );
-    let explicit_manifest =
-        fs::read_to_string(explicit_target.join("crates/123-explicit-dir/Cargo.toml"))
-            .expect("failed to read explicit Rust manifest");
-    assert!(explicit_manifest.contains("name = \"pkg-123-explicit-rust\""));
-    let repo_check = fs::read_to_string(explicit_target.join("repo-check.toml"))
-        .expect("failed to read explicit repo-check config");
-    assert!(repo_check.contains("package_name = \"pkg-123-explicit-rust\""));
-    assert!(repo_check.contains("crate_dir = \"123-explicit-dir\""));
-    run_generated_repo_check(&explicit_target, &["workspace", "local"]);
+    assert!(explicit_output.contains("provided Rust package name is invalid"));
 }
 
 #[test]
-fn python_import_package_name_is_normalized_separately_from_distribution_name() {
+fn python_import_package_name_rejects_numeric_distribution_defaults() {
     let sandbox = TempDir::new("numeric-python-names");
+    let derived_target = sandbox.path().join("123-python-derived");
+    let derived_output = run_cli_failure([
+        "init",
+        derived_target.to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--no-git-init",
+    ]);
+    assert!(derived_output.contains("derived Python import package name is invalid"));
+    assert!(derived_output.contains("--package-name"));
+
     let target = sandbox.path().join("python-explicit");
-    run_cli([
+    let output = run_cli_failure([
         "init",
         target.to_string_lossy().as_ref(),
         "--project",
@@ -328,19 +325,7 @@ fn python_import_package_name_is_normalized_separately_from_distribution_name() 
         "123-python-app",
         "--no-git-init",
     ]);
-
-    let pyproject =
-        fs::read_to_string(target.join("pyproject.toml")).expect("failed to read pyproject.toml");
-    assert!(pyproject.contains("name = \"123-python-app\""));
-    assert!(
-        pyproject.contains("packages = [\"pkg_123_python_app\"]"),
-        "python import package should use a valid identifier"
-    );
-    assert!(target.join("pkg_123_python_app/__init__.py").is_file());
-
-    if has_python() {
-        run_generated_repo_check(&target, &["workspace", "local"]);
-    }
+    assert!(output.contains("derived Python import package name is invalid"));
 }
 
 #[test]
@@ -398,6 +383,32 @@ fn force_reinit_replaces_previous_scaffold_instead_of_mixing_layouts() {
     assert!(repo.path().join("tests/test_basic.py").is_file());
     assert!(!repo.path().join("Cargo.toml").exists());
     assert!(!repo.path().join("crates").exists());
+}
+
+#[test]
+fn force_reinit_refuses_to_remove_modified_generated_files() {
+    let repo = TempDir::new("force-reinit-dirty");
+    run_cli([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--no-git-init",
+    ]);
+
+    append_to_file(&repo.path().join("README.md"), "\nmanual note\n");
+    let output = run_cli_failure([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--force",
+        "--no-git-init",
+    ]);
+    assert!(output.contains("previously generated files were modified by hand"));
+    assert!(output.contains("README.md"));
 }
 
 #[test]
@@ -786,6 +797,18 @@ where
         command.arg(arg.as_ref());
     }
     run_ok("omne-project-init", &mut command)
+}
+
+fn run_cli_failure<I, S>(args: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut command = Command::new(cli_binary());
+    for arg in args {
+        command.arg(arg.as_ref());
+    }
+    run_fail("omne-project-init", &mut command)
 }
 
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {

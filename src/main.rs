@@ -79,6 +79,25 @@ enum NameKind {
     DistributionPackage,
 }
 
+impl NameKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Repo => "repo name",
+            Self::RustPackage => "Rust package name",
+            Self::CrateDir => "crate directory",
+            Self::PythonImportPackage => "Python import package name",
+            Self::DistributionPackage => "distribution package name",
+        }
+    }
+
+    fn delimiter(self) -> char {
+        match self {
+            Self::PythonImportPackage => '_',
+            Self::Repo | Self::RustPackage | Self::CrateDir | Self::DistributionPackage => '-',
+        }
+    }
+}
+
 #[derive(Debug)]
 struct InitConfig {
     target_dir: PathBuf,
@@ -239,19 +258,19 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
         .and_then(|value| value.to_str())
         .unwrap_or("new-project");
     let inferred_repo_name = match repo_name {
-        Some(value) => normalize_name(&value, NameKind::Repo)?,
-        None => normalize_name(target_basename, NameKind::Repo)
+        Some(value) => normalize_name(&value, NameKind::Repo, true)?,
+        None => normalize_name(target_basename, NameKind::Repo, false)
             .unwrap_or_else(|_| "new-project".to_string()),
     };
     let package_name = match package_name {
-        Some(value) => normalize_package_name(&value, project_kind)?,
+        Some(value) => normalize_package_name(&value, project_kind, true)?,
         None => derive_default_package_name(project_kind, &inferred_repo_name)?,
     };
     let crate_dir = match crate_dir {
-        Some(value) => normalize_name(&value, NameKind::CrateDir)?,
+        Some(value) => normalize_name(&value, NameKind::CrateDir, true)?,
         None => package_name.clone(),
     };
-    let python_package = normalize_name(&package_name, NameKind::PythonImportPackage)?;
+    let python_package = normalize_name(&package_name, NameKind::PythonImportPackage, false)?;
 
     let layout = match layout {
         Some(Layout::Crate) if project_kind != ProjectKind::Rust => {
@@ -294,50 +313,25 @@ fn derive_default_package_name(
     project_kind: ProjectKind,
     repo_name: &str,
 ) -> Result<String, String> {
-    normalize_package_name(repo_name, project_kind)
+    normalize_package_name(repo_name, project_kind, false)
 }
 
-fn normalize_package_name(value: &str, project_kind: ProjectKind) -> Result<String, String> {
+fn normalize_package_name(
+    value: &str,
+    project_kind: ProjectKind,
+    explicit: bool,
+) -> Result<String, String> {
     match project_kind {
-        ProjectKind::Rust => normalize_name(value, NameKind::RustPackage),
+        ProjectKind::Rust => normalize_name(value, NameKind::RustPackage, explicit),
         ProjectKind::Python | ProjectKind::Nodejs => {
-            normalize_name(value, NameKind::DistributionPackage)
+            normalize_name(value, NameKind::DistributionPackage, explicit)
         }
     }
 }
 
-fn normalize_name(value: &str, kind: NameKind) -> Result<String, String> {
-    let delimiter = match kind {
-        NameKind::PythonImportPackage => '_',
-        NameKind::Repo
-        | NameKind::RustPackage
-        | NameKind::CrateDir
-        | NameKind::DistributionPackage => '-',
-    };
-    let mut normalized = normalize_ascii_name(value, delimiter)?;
-
-    match kind {
-        NameKind::RustPackage => {
-            if normalized
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_ascii_digit())
-            {
-                normalized = format!("pkg-{normalized}");
-            }
-        }
-        NameKind::PythonImportPackage => {
-            if normalized
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_ascii_digit())
-            {
-                normalized = format!("pkg_{normalized}");
-            }
-        }
-        NameKind::Repo | NameKind::CrateDir | NameKind::DistributionPackage => {}
-    }
-
+fn normalize_name(value: &str, kind: NameKind, explicit: bool) -> Result<String, String> {
+    let normalized = normalize_ascii_name(value, kind.delimiter())?;
+    validate_normalized_name(value, &normalized, kind, explicit)?;
     Ok(normalized)
 }
 
@@ -556,15 +550,82 @@ fn cleanup_existing_scaffold(config: &InitConfig) -> Result<(), String> {
         ));
     }
 
+    let old_manifest = output_manifest(&existing.config)?;
+    let new_manifest = output_manifest(config)?;
+    let modified_paths = modified_managed_paths(&config.target_dir, &existing.config)?;
+    if !modified_paths.is_empty() {
+        return Err(format!(
+            "`--force` refused because previously generated files were modified by hand.\n\nRestore or remove these paths before re-running:\n{}",
+            modified_paths
+                .iter()
+                .map(|path| format!("- {path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    let colliding_paths = unmanaged_new_path_collisions(&config.target_dir, &old_manifest, config)?;
+    if !colliding_paths.is_empty() {
+        return Err(format!(
+            "`--force` refused because regeneration would overwrite non-generated files.\n\nConflicting paths:\n{}",
+            colliding_paths
+                .iter()
+                .map(|path| format!("- {path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
     let mut managed_paths = std::collections::BTreeSet::new();
-    managed_paths.extend(output_manifest(&existing.config)?);
-    managed_paths.extend(output_manifest(config)?);
+    managed_paths.extend(old_manifest);
+    managed_paths.extend(new_manifest);
 
     for relative_path in &managed_paths {
         remove_managed_path(&config.target_dir.join(relative_path))?;
     }
     prune_empty_generated_directories(&config.target_dir, &managed_paths)?;
     Ok(())
+}
+
+fn modified_managed_paths(target_dir: &Path, config: &InitConfig) -> Result<Vec<String>, String> {
+    let mut modified = Vec::new();
+    for (source_path, relative_output) in template_files(config)? {
+        let destination = target_dir.join(&relative_output);
+        if !destination.exists() {
+            continue;
+        }
+        let expected = render_template_bytes(
+            fs::read(&source_path)
+                .map_err(|error| format!("failed to read {}: {error}", source_path.display()))?,
+            config,
+        );
+        let actual = fs::read(&destination)
+            .map_err(|error| format!("failed to read {}: {error}", destination.display()))?;
+        if actual != expected {
+            modified.push(relative_output);
+        }
+    }
+    modified.sort();
+    Ok(modified)
+}
+
+fn unmanaged_new_path_collisions(
+    target_dir: &Path,
+    old_manifest: &[String],
+    new_config: &InitConfig,
+) -> Result<Vec<String>, String> {
+    let old_paths: std::collections::BTreeSet<&str> = old_manifest.iter().map(String::as_str).collect();
+    let mut collisions = Vec::new();
+    for relative_output in output_manifest(new_config)? {
+        if old_paths.contains(relative_output.as_str()) {
+            continue;
+        }
+        if target_dir.join(&relative_output).exists() {
+            collisions.push(relative_output);
+        }
+    }
+    collisions.sort();
+    Ok(collisions)
 }
 
 fn remove_managed_path(path: &Path) -> Result<(), String> {
@@ -885,6 +946,36 @@ fn json_escape(value: &str) -> String {
     out
 }
 
+fn validate_normalized_name(
+    original: &str,
+    normalized: &str,
+    kind: NameKind,
+    explicit: bool,
+) -> Result<(), String> {
+    if matches!(kind, NameKind::RustPackage | NameKind::PythonImportPackage)
+        && normalized
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+    {
+        let flag = match kind {
+            NameKind::RustPackage | NameKind::DistributionPackage | NameKind::PythonImportPackage => {
+                "--package-name"
+            }
+            NameKind::CrateDir => "--crate-dir",
+            NameKind::Repo => "--repo-name",
+        };
+        let source = if explicit { "provided" } else { "derived" };
+        return Err(format!(
+            "{source} {} is invalid: `{}` normalizes to `{}` which starts with a digit.\n\nChoose a value whose first ASCII character is a letter, for example via `{flag}`.",
+            kind.label(),
+            original,
+            normalized
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,24 +1013,21 @@ mod tests {
     }
 
     #[test]
-    fn rust_package_names_gain_safe_prefix_when_input_starts_with_digits() {
+    fn rust_package_names_reject_leading_digits() {
+        let error = normalize_name("123-demo", NameKind::RustPackage, true)
+            .expect_err("leading-digit rust package should fail");
+        assert!(error.contains("starts with a digit"));
         assert_eq!(
-            normalize_name("123-demo", NameKind::RustPackage).expect("normalize rust package"),
-            "pkg-123-demo"
-        );
-        assert_eq!(
-            normalize_name("123-demo", NameKind::CrateDir).expect("normalize crate dir"),
+            normalize_name("123-demo", NameKind::CrateDir, true).expect("normalize crate dir"),
             "123-demo"
         );
     }
 
     #[test]
-    fn python_import_names_gain_safe_prefix_when_input_starts_with_digits() {
-        assert_eq!(
-            normalize_name("123-demo", NameKind::PythonImportPackage)
-                .expect("normalize python package"),
-            "pkg_123_demo"
-        );
+    fn python_import_names_reject_leading_digits() {
+        let error = normalize_name("123-demo", NameKind::PythonImportPackage, true)
+            .expect_err("leading-digit python import package should fail");
+        assert!(error.contains("starts with a digit"));
     }
 
     #[test]
@@ -955,6 +1043,13 @@ mod tests {
         let config = test_config(Path::new("."));
         let rendered = render_template_bytes(vec![0xff, 0xfe, 0xfd], &config);
         assert_eq!(rendered, vec![0xff, 0xfe, 0xfd]);
+    }
+
+    #[test]
+    fn derived_rust_package_names_reject_invalid_repo_slug() {
+        let error = derive_default_package_name(ProjectKind::Rust, "123-demo")
+            .expect_err("derived rust package should fail");
+        assert!(error.contains("--package-name"));
     }
 
     fn test_config(target_dir: &Path) -> InitConfig {
