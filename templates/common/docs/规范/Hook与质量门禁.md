@@ -33,6 +33,7 @@
 
 补充说明：
 
+- root layout 下，只有会触及发布面的实际改动才要求同步更新 `repo-check.toml` 配置的 changelog；纯文档和治理包装改动不会被强制写 changelog
 - crate layout 下，root 级治理代码、workspace 根文档和其他不属于活跃 crate 的改动，会归属到 `repo-check.toml` 配置的主 changelog 路径
 - `crates/<name>/` 下只有真实 crate 才会被当作 crate-package；共享目录不会自动变成 changelog owner
 - 如果一个 crate 被整体删除，对应的 crate changelog 可以随之删除
@@ -78,3 +79,5 @@ Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 
 2. external binary
 
 repo-local manifest 默认是 `tools/repo-check/Cargo.toml`，也可以通过 `OMNE_REPO_CHECK_MANIFEST` 指向其他位置。
+
+hook wrapper 会把 Unix 路径、Windows 盘符绝对路径和 UNC 路径都当作绝对路径处理，不会再错误拼到仓库根目录后面。
