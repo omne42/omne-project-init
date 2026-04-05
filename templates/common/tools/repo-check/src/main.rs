@@ -179,14 +179,12 @@ fn real_main() -> Result<(), String> {
 }
 
 fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String> {
-    let values: Vec<String> = args
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect();
+    let values: Vec<OsString> = args.collect();
     if values.is_empty() {
         return Err(usage());
     }
 
-    let subcommand = values[0].as_str();
+    let subcommand = utf8_arg(&values[0], "subcommand")?;
     let mut repo_root = PathBuf::from(".");
     let mut commit_msg_file: Option<PathBuf> = None;
     let mut workspace_mode: Option<WorkspaceMode> = None;
@@ -194,12 +192,13 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
     let mut index = 1;
     if subcommand == "workspace" {
         let value = values.get(index).ok_or_else(usage)?;
-        workspace_mode = Some(WorkspaceMode::parse(value)?);
+        workspace_mode = Some(WorkspaceMode::parse(utf8_arg(value, "workspace mode")?)?);
         index += 1;
     }
 
     while index < values.len() {
-        match values[index].as_str() {
+        let current = &values[index];
+        match utf8_arg(current, "argument")? {
             "--repo-root" => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
@@ -238,6 +237,15 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
 
 fn usage() -> String {
     "usage: repo-check <install-hooks|pre-commit|commit-msg|workspace|validate-branch> [workspace local|ci] [--repo-root PATH] [--commit-msg-file PATH]".to_string()
+}
+
+fn utf8_arg<'a>(value: &'a OsString, label: &str) -> Result<&'a str, String> {
+    value.to_str().ok_or_else(|| {
+        format!(
+            "repo-check: {label} must be valid UTF-8: {}",
+            PathBuf::from(value).display()
+        )
+    })
 }
 
 fn normalize_repo_root(path: PathBuf) -> PathBuf {
@@ -1346,14 +1354,15 @@ fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), Str
             destination.display()
         )
     })?;
-    let prefix = format!("{}/", destination.display());
+    let mut prefix = destination.as_os_str().to_os_string();
+    prefix.push(std::path::MAIN_SEPARATOR_STR);
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .arg("checkout-index")
         .arg("--all")
         .arg("--prefix")
-        .arg(prefix)
+        .arg(&prefix)
         .output()
         .map_err(|error| {
             format!(
@@ -1364,15 +1373,11 @@ fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), Str
     if output.status.success() {
         return Ok(());
     }
-    Err(render_git_failure(
-        repo_root,
-        &[
-            "checkout-index",
-            "--all",
-            "--prefix",
-            destination.to_string_lossy().as_ref(),
-        ],
-        &output,
+    Err(format!(
+        "repo-check: git command failed: git -C {} checkout-index --all --prefix {:?}\n\n{}",
+        repo_root.display(),
+        prefix,
+        git_output_detail(&output)
     ))
 }
 
@@ -1742,7 +1747,10 @@ fn git_missing_head(output: &Output) -> bool {
 }
 
 fn git_missing_head_path(output: &Output) -> bool {
-    git_output_detail(output).contains("Not a valid object name HEAD:")
+    let detail = git_output_detail(output);
+    detail.contains("Not a valid object name HEAD:")
+        || detail.contains("does not exist in 'HEAD'")
+        || detail.contains("exists on disk, but not in 'HEAD'")
 }
 
 fn git_missing_index_path(output: &Output) -> bool {
@@ -1803,6 +1811,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+
     #[test]
     fn git_show_text_returns_none_for_missing_head_and_index_paths() {
         let sandbox = TempDir::new("git-show-missing");
@@ -1857,6 +1868,35 @@ mod tests {
             error.contains("rev-parse --verify HEAD"),
             "unexpected error: {error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_preserves_non_utf8_paths() {
+        let repo_root_arg = OsString::from_vec(vec![0x72, 0x80, 0x70, 0x6f]);
+        let commit_msg_arg = OsString::from_vec(vec![0x63, 0x80, 0x6d, 0x6d, 0x69, 0x74]);
+
+        let command = parse_cli(
+            [
+                OsString::from("commit-msg"),
+                OsString::from("--repo-root"),
+                repo_root_arg.clone(),
+                OsString::from("--commit-msg-file"),
+                commit_msg_arg.clone(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse cli");
+
+        let CliCommand::CommitMsg {
+            repo_root,
+            commit_msg_file,
+        } = command
+        else {
+            panic!("expected commit-msg command");
+        };
+        assert_eq!(repo_root, PathBuf::from(repo_root_arg));
+        assert_eq!(commit_msg_file, PathBuf::from(commit_msg_arg));
     }
 
     fn run_ok(repo_root: &Path, args: &[&str], label: &str) {

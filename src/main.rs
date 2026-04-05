@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -186,14 +186,12 @@ fn real_main() -> Result<(), String> {
 }
 
 fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String> {
-    let values: Vec<String> = args
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect();
+    let values: Vec<OsString> = args.collect();
     if values.is_empty() {
         return Err(usage());
     }
 
-    let subcommand = values[0].as_str();
+    let subcommand = utf8_arg(&values[0], "subcommand")?;
     let mut project_kind = ProjectKind::Rust;
     let mut layout: Option<Layout> = None;
     let mut repo_name: Option<String> = None;
@@ -207,41 +205,46 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
     let mut index = 1;
     while index < values.len() {
         let current = &values[index];
-        match current.as_str() {
-            "--project" => {
+        match current.to_str() {
+            Some("--project") => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                project_kind = ProjectKind::parse(value)?;
+                project_kind = ProjectKind::parse(utf8_arg(value, "--project value")?)?;
             }
-            "--layout" => {
+            Some("--layout") => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                layout = Some(Layout::parse(value)?);
+                layout = Some(Layout::parse(utf8_arg(value, "--layout value")?)?);
             }
-            "--repo-name" => {
+            Some("--repo-name") => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                repo_name = Some(value.to_string());
+                repo_name = Some(utf8_arg(value, "--repo-name value")?.to_string());
             }
-            "--package-name" => {
+            Some("--package-name") => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                package_name = Some(value.to_string());
+                package_name = Some(utf8_arg(value, "--package-name value")?.to_string());
             }
-            "--crate-dir" => {
+            Some("--crate-dir") => {
                 index += 1;
                 let value = values.get(index).ok_or_else(usage)?;
-                crate_dir = Some(value.to_string());
+                crate_dir = Some(utf8_arg(value, "--crate-dir value")?.to_string());
             }
-            "--force" => force = true,
-            "--no-git-init" => git_init = false,
-            "--no-setup-hooks" => setup_hooks = false,
-            value if value.starts_with("--") => return Err(format!("unsupported option: {value}")),
-            value => {
+            Some("--force") => force = true,
+            Some("--no-git-init") => git_init = false,
+            Some("--no-setup-hooks") => setup_hooks = false,
+            Some(value) if value.starts_with("--") => {
+                return Err(format!("unsupported option: {value}"));
+            }
+            _ => {
                 if target_dir.is_some() {
-                    return Err(format!("unexpected positional argument: {value}"));
+                    return Err(format!(
+                        "unexpected positional argument: {}",
+                        PathBuf::from(current).display()
+                    ));
                 }
-                target_dir = Some(PathBuf::from(value));
+                target_dir = Some(PathBuf::from(current));
             }
         }
         index += 1;
@@ -302,6 +305,15 @@ fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String>
 
 fn usage() -> String {
     "usage: omne-project-init <init|manifest> <target_dir> [--project rust|python|nodejs] [--layout root|crate] [--repo-name NAME] [--package-name NAME] [--crate-dir NAME] [--force] [--no-git-init] [--no-setup-hooks]".to_string()
+}
+
+fn utf8_arg<'a>(value: &'a OsString, label: &str) -> Result<&'a str, String> {
+    value.to_str().ok_or_else(|| {
+        format!(
+            "{label} must be valid UTF-8: {}",
+            PathBuf::from(value).display()
+        )
+    })
 }
 
 fn derive_default_package_name(
@@ -520,15 +532,17 @@ fn existing_target_entries(target_dir: &Path) -> Result<Vec<String>, String> {
     let mut existing: Vec<String> = read_dir_entries(target_dir)?
         .into_iter()
         .map(|entry| entry.path())
-        .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(".git"))
-        .filter_map(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|value| value.to_string())
-        })
+        .filter(|path| path.file_name() != Some(OsStr::new(".git")))
+        .map(|path| display_entry_name(&path))
         .collect();
     existing.sort();
     Ok(existing)
+}
+
+fn display_entry_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| Path::new(name).display().to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn cleanup_existing_scaffold(config: &InitConfig) -> Result<(), String> {
@@ -609,7 +623,8 @@ fn unmanaged_new_path_collisions(
     old_manifest: &[String],
     new_config: &InitConfig,
 ) -> Result<Vec<String>, String> {
-    let old_paths: std::collections::BTreeSet<&str> = old_manifest.iter().map(String::as_str).collect();
+    let old_paths: std::collections::BTreeSet<&str> =
+        old_manifest.iter().map(String::as_str).collect();
     let mut collisions = Vec::new();
     for relative_output in output_manifest(new_config)? {
         if old_paths.contains(relative_output.as_str()) {
@@ -954,9 +969,9 @@ fn validate_normalized_name(
             .is_some_and(|character| character.is_ascii_digit())
     {
         let flag = match kind {
-            NameKind::RustPackage | NameKind::DistributionPackage | NameKind::PythonImportPackage => {
-                "--package-name"
-            }
+            NameKind::RustPackage
+            | NameKind::DistributionPackage
+            | NameKind::PythonImportPackage => "--package-name",
             NameKind::CrateDir => "--crate-dir",
             NameKind::Repo => "--repo-name",
         };
@@ -976,6 +991,9 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn collect_template_files_skips_known_build_directories() {
@@ -1045,6 +1063,44 @@ mod tests {
         let error = derive_default_package_name(ProjectKind::Rust, "123-demo")
             .expect_err("derived rust package should fail");
         assert!(error.contains("--package-name"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_preserves_non_utf8_target_dir() {
+        let target_dir = OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+        let command = parse_cli(
+            [
+                OsString::from("manifest"),
+                target_dir.clone(),
+                OsString::from("--project"),
+                OsString::from("rust"),
+            ]
+            .into_iter(),
+        )
+        .expect("parse cli");
+
+        let CliCommand::Manifest(config) = command else {
+            panic!("expected manifest command");
+        };
+        assert_eq!(config.target_dir, PathBuf::from(target_dir));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_target_dir_rejects_non_utf8_existing_entries() {
+        let sandbox = TempDir::new("non-utf8-existing");
+        fs::write(
+            sandbox
+                .path()
+                .join(PathBuf::from(OsString::from_vec(vec![0x66, 0x80, 0x6f]))),
+            "existing\n",
+        )
+        .expect("write existing file");
+
+        let error = prepare_target_dir(&test_config(sandbox.path()))
+            .expect_err("non-empty directory should be rejected");
+        assert!(error.contains("target directory is not empty"));
     }
 
     fn test_config(target_dir: &Path) -> InitConfig {
