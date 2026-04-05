@@ -147,12 +147,7 @@ impl InitConfig {
     }
 
     fn primary_validation_command(&self) -> String {
-        match (self.project_kind, self.layout) {
-            (ProjectKind::Rust, Layout::Root) => "cargo test".to_string(),
-            (ProjectKind::Rust, Layout::Crate) => "cargo test --workspace".to_string(),
-            (ProjectKind::Python, _) => "pytest".to_string(),
-            (ProjectKind::Nodejs, _) => "npm test".to_string(),
-        }
+        "cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local".to_string()
     }
 }
 

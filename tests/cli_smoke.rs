@@ -129,11 +129,15 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let crate_agents = fs::read_to_string(rust_crate.path().join("AGENTS.md"))
         .expect("failed to read crate AGENTS.md");
-    assert!(crate_agents.contains("主要验证命令：`cargo test --workspace`"));
+    assert!(crate_agents.contains(
+        "主要验证命令：`cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local`"
+    ));
 
     let root_agents =
         fs::read_to_string(rust_root.path().join("AGENTS.md")).expect("failed to read AGENTS.md");
-    assert!(root_agents.contains("主要验证命令：`cargo test`"));
+    assert!(root_agents.contains(
+        "主要验证命令：`cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local`"
+    ));
 }
 
 #[test]
@@ -421,12 +425,16 @@ fn generated_agents_use_validation_commands_instead_of_fake_test_paths() {
 
     let rust_agents =
         fs::read_to_string(rust_root.path().join("AGENTS.md")).expect("failed to read AGENTS");
-    assert!(rust_agents.contains("主要验证命令：`cargo test`"));
+    assert!(rust_agents.contains(
+        "主要验证命令：`cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local`"
+    ));
     assert!(!rust_agents.contains("主要验证入口"));
 
     let python_agents =
         fs::read_to_string(python.path().join("AGENTS.md")).expect("failed to read AGENTS");
-    assert!(python_agents.contains("主要验证命令：`pytest`"));
+    assert!(python_agents.contains(
+        "主要验证命令：`cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local`"
+    ));
 }
 
 #[test]
