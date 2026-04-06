@@ -279,6 +279,35 @@ fn pre_commit_requires_override_for_stable_major_transition() {
 }
 
 #[test]
+fn initial_stable_release_is_not_treated_as_major_bump() {
+    let repo = init_repo(
+        "rust-stable-major-initial",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    run_git(repo.path(), &["add", "."]);
+
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.initial");
+    fs::write(&commit_msg, "feat(repo): initial stable release\n").expect("write commit msg");
+    run_generated_repo_check(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+}
+
+#[test]
 fn commit_msg_requires_breaking_marker_for_stable_major_transition() {
     let repo = init_repo(
         "rust-stable-major-commit-msg",

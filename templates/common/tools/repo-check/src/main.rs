@@ -1090,13 +1090,6 @@ fn major_change_targets(
         if new_major == Some(0) {
             continue;
         }
-        if config.layout == Layout::Root
-            && old_major.is_none()
-            && new_major.is_some_and(|value| value > 0)
-        {
-            changed.push(target);
-            continue;
-        }
         if let (Some(old_major), Some(new_major)) = (old_major, new_major)
             && new_major > 0
             && new_major != old_major
