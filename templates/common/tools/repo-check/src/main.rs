@@ -1668,22 +1668,20 @@ fn run_workspace_checks(
                 "cargo",
                 &["test", "--workspace", "--all-features"],
             )?;
-            if mode == WorkspaceMode::Ci {
-                run_named_command(
-                    repo_root,
-                    "rust clippy",
-                    "cargo",
-                    &[
-                        "clippy",
-                        "--workspace",
-                        "--all-targets",
-                        "--all-features",
-                        "--",
-                        "-D",
-                        "warnings",
-                    ],
-                )?;
-            }
+            run_named_command(
+                repo_root,
+                "rust clippy",
+                "cargo",
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--all-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            )?;
             Ok(())
         }
         ProjectKind::Python => {

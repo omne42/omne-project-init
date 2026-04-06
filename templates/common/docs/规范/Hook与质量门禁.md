@@ -56,8 +56,10 @@
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets --all-features`
 - `cargo test --workspace --all-features`
-- `ci` 额外执行 `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Rust 模板生成的 workspace 会把 `tools/repo-check` 纳入 member，所以这些 gate 会直接覆盖治理工具本身
+
+当前 `workspace local` 和 `workspace ci` 在 Rust 项目上执行同一套质量门禁。保留 `ci` 模式只是为了给 hook、本地手动检查和 CI 提供稳定、统一的调用入口。
 
 ### python
 
