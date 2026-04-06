@@ -108,6 +108,43 @@ fn commit_msg_detects_top_level_node_major_bump() {
 }
 
 #[test]
+fn commit_msg_detects_single_line_node_major_bump() {
+    let repo = init_repo("node-major-bump-single-line", &["--project", "nodejs"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"version\":\"1.2.3\",\"meta\":{\"version\":\"0.0.1\"},\"name\":\"node-major-bump-single-line\",\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+    )
+    .expect("write package.json");
+    git_add(repo.path(), &["package.json"]);
+    commit_all(repo.path(), "chore(node): prepare major baseline");
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"version\":\"2.0.0\",\"meta\":{\"version\":\"0.0.1\"},\"name\":\"node-major-bump-single-line\",\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+    )
+    .expect("write bumped package.json");
+    git_add(repo.path(), &["package.json"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.test");
+    fs::write(&commit_msg, "feat(node): major bump without marker\n").expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("requires an explicit breaking commit message"),
+        "expected breaking marker failure, got: {error}"
+    );
+}
+
+#[test]
 fn prerelease_versions_are_accepted_by_commit_msg_gate() {
     let repo = init_repo(
         "rust-prerelease",
@@ -197,6 +234,67 @@ fn crate_layout_root_governance_changes_require_primary_changelog() {
         error.contains(&format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()))),
         "expected primary crate changelog requirement, got: {error}"
     );
+}
+
+#[test]
+fn crate_layout_allows_renaming_primary_crate_dir() {
+    let repo = init_repo("crate-rename", &["--project", "rust", "--layout", "crate"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let old_crate_dir = repo_slug(repo.path()).to_string();
+    let new_crate_dir = format!("{old_crate_dir}-renamed");
+    fs::rename(
+        repo.path().join(format!("crates/{old_crate_dir}")),
+        repo.path().join(format!("crates/{new_crate_dir}")),
+    )
+    .expect("rename primary crate dir");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        &format!("\"crates/{old_crate_dir}\""),
+        &format!("\"crates/{new_crate_dir}\""),
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("crate_dir = \"{old_crate_dir}\""),
+        &format!("crate_dir = \"{new_crate_dir}\""),
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("package_manifest_path = \"crates/{old_crate_dir}/Cargo.toml\""),
+        &format!("package_manifest_path = \"crates/{new_crate_dir}/Cargo.toml\""),
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("changelog_path = \"crates/{old_crate_dir}/CHANGELOG.md\""),
+        &format!("changelog_path = \"crates/{new_crate_dir}/CHANGELOG.md\""),
+    );
+
+    let lib_rs = repo
+        .path()
+        .join(format!("crates/{new_crate_dir}/src/lib.rs"));
+    let mut lib_text = fs::read_to_string(&lib_rs).expect("read renamed lib.rs");
+    lib_text.push_str("\n// keep crate rename regression covered\n");
+    fs::write(&lib_rs, lib_text).expect("write renamed lib.rs");
+
+    let mut changelog = fs::read_to_string(repo.path().join(format!(
+        "crates/{new_crate_dir}/CHANGELOG.md"
+    )))
+    .expect("read renamed changelog");
+    changelog.push_str("- rename primary crate directory\n");
+    fs::write(
+        repo.path().join(format!("crates/{new_crate_dir}/CHANGELOG.md")),
+        changelog,
+    )
+    .expect("write renamed changelog");
+
+    let mut readme = fs::read_to_string(repo.path().join("README.md")).expect("read README");
+    readme.push_str("\ncrate rename regression\n");
+    fs::write(repo.path().join("README.md"), readme).expect("write README");
+
+    run_git(repo.path(), &["add", "-A"]);
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
 }
 
 #[test]
