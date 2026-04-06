@@ -445,6 +445,13 @@ fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
     git_config_identity(repo.path());
     git_commit_all(repo.path(), "chore(repo): initial scaffold");
 
+    replace_in_file(
+        &repo.path().join("package.json"),
+        "\"version\": \"0.1.0\"",
+        "\"version\": \"1.2.3\"",
+    );
+    git_commit_all(repo.path(), "chore(node): prepare stable baseline");
+
     fs::create_dir_all(repo.path().join("config")).expect("failed to create config dir");
     fs::create_dir_all(repo.path().join("docs")).expect("failed to create docs dir");
     fs::rename(
@@ -480,8 +487,8 @@ fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
     git_add_all(repo.path());
     let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
     assert!(
-        output.contains("refusing major version change by default"),
-        "expected major bump gate, got:\n{output}"
+        output.contains("config/package.json"),
+        "configured manifest path was not used in version gate:\n{output}"
     );
     assert!(
         !output.contains("Only `CHANGELOG.md` is allowed"),

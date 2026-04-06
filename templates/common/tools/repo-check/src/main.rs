@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -98,7 +98,7 @@ enum CliCommand {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RepoConfig {
     template_version: String,
     repo_name: String,
@@ -250,14 +250,32 @@ fn utf8_arg<'a>(value: &'a OsString, label: &str) -> Result<&'a str, String> {
 }
 
 fn normalize_repo_root(path: PathBuf) -> PathBuf {
+    let path = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|current_dir| current_dir.join(&path))
+            .unwrap_or(path)
+    };
     let path = path.canonicalize().unwrap_or(path);
-    git_toplevel_for(&path).unwrap_or(path)
+    find_repo_root(&path)
+        .or_else(|| git_toplevel_for(&path).and_then(|repo_root| find_repo_root(&repo_root)))
+        .unwrap_or(path)
+}
+
+fn find_repo_root(path: &Path) -> Option<PathBuf> {
+    let start = if path.is_dir() { path } else { path.parent()? };
+    start
+        .ancestors()
+        .find(|candidate| candidate.join("repo-check.toml").is_file())
+        .map(Path::to_path_buf)
 }
 
 fn git_toplevel_for(path: &Path) -> Option<PathBuf> {
+    let working_dir = if path.is_dir() { path } else { path.parent()? };
     let output = Command::new("git")
         .arg("-C")
-        .arg(path)
+        .arg(working_dir)
         .arg("rev-parse")
         .arg("--show-toplevel")
         .output()
@@ -278,105 +296,40 @@ impl RepoConfig {
         let path = repo_root.join("repo-check.toml");
         let text = fs::read_to_string(&path)
             .map_err(|error| format!("repo-check: failed to read {}: {error}", path.display()))?;
-        let values = parse_flat_config(&text)?;
+        Self::parse_from_text(&text, &path.display().to_string())
+    }
 
-        let template_version = required_value(&values, "template_version")?;
-        let repo_name = required_value(&values, "repo_name")?;
-        let project_kind = ProjectKind::parse(&required_value(&values, "project_kind")?)?;
-        let layout = Layout::parse(&required_value(&values, "layout")?)?;
-        let package_name = required_value(&values, "package_name")?;
-        let crate_dir = required_value(&values, "crate_dir")?;
-        let python_package = required_value(&values, "python_package")?;
-        let package_manifest_path = required_value(&values, "package_manifest_path")?;
-        let changelog_path = required_value(&values, "changelog_path")?;
+    fn load_from_git(repo_root: &Path, revision: &str) -> Result<Option<Self>, String> {
+        let pathspec = format!("{revision}:repo-check.toml");
+        let Some(text) = git_show_text(repo_root, &pathspec)? else {
+            return Ok(None);
+        };
+        Self::parse_from_text(&text, &pathspec).map(Some)
+    }
 
+    fn parse_from_text(text: &str, source: &str) -> Result<Self, String> {
+        let values = toml::from_str::<TomlValue>(text)
+            .map_err(|error| format!("repo-check: failed to parse {source}: {error}"))?;
         Ok(Self {
-            template_version,
-            repo_name,
-            project_kind,
-            layout,
-            package_name,
-            crate_dir,
-            python_package,
-            package_manifest_path,
-            changelog_path,
+            template_version: required_value(&values, "template_version")?,
+            repo_name: required_value(&values, "repo_name")?,
+            project_kind: ProjectKind::parse(&required_value(&values, "project_kind")?)?,
+            layout: Layout::parse(&required_value(&values, "layout")?)?,
+            package_name: required_value(&values, "package_name")?,
+            crate_dir: required_value(&values, "crate_dir")?,
+            python_package: required_value(&values, "python_package")?,
+            package_manifest_path: required_value(&values, "package_manifest_path")?,
+            changelog_path: required_value(&values, "changelog_path")?,
         })
     }
 }
 
-fn required_value(values: &BTreeMap<String, String>, key: &str) -> Result<String, String> {
+fn required_value(values: &TomlValue, key: &str) -> Result<String, String> {
     values
         .get(key)
-        .cloned()
+        .and_then(TomlValue::as_str)
+        .map(str::to_string)
         .ok_or_else(|| format!("repo-check: missing `{key}` in repo-check.toml"))
-}
-
-fn parse_flat_config(text: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut values = BTreeMap::new();
-    for (line_number, raw_line) in text.lines().enumerate() {
-        let line = strip_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line.split_once('=').ok_or_else(|| {
-            format!(
-                "repo-check: invalid config line {}: expected `key = \"value\"`",
-                line_number + 1
-            )
-        })?;
-        let key = key.trim();
-        let value = parse_quoted_value(value.trim()).ok_or_else(|| {
-            format!(
-                "repo-check: invalid config value on line {}: expected quoted string",
-                line_number + 1
-            )
-        })?;
-        values.insert(key.to_string(), value);
-    }
-    Ok(values)
-}
-
-fn strip_comment(line: &str) -> &str {
-    let mut in_string = false;
-    for (index, character) in line.char_indices() {
-        match character {
-            '"' => in_string = !in_string,
-            '#' if !in_string => return &line[..index],
-            _ => {}
-        }
-    }
-    line
-}
-
-fn parse_quoted_value(value: &str) -> Option<String> {
-    if !value.starts_with('"') || !value.ends_with('"') || value.len() < 2 {
-        return None;
-    }
-    let inner = &value[1..value.len() - 1];
-    let mut out = String::new();
-    let mut escaped = false;
-    for character in inner.chars() {
-        if escaped {
-            match character {
-                '\\' | '"' => out.push(character),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                _ => return None,
-            }
-            escaped = false;
-            continue;
-        }
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-        out.push(character);
-    }
-    if escaped {
-        return None;
-    }
-    Some(out)
 }
 
 fn install_hooks(repo_root: &Path) -> Result<(), String> {
@@ -1125,15 +1078,23 @@ fn major_change_targets(
 }
 
 fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionTarget>, String> {
-    match (config.project_kind, config.layout) {
+    let index_config = RepoConfig::load_from_git(repo_root, "")?.unwrap_or_else(|| config.clone());
+    let head_config =
+        RepoConfig::load_from_git(repo_root, "HEAD")?.unwrap_or_else(|| index_config.clone());
+
+    match (index_config.project_kind, index_config.layout) {
         (ProjectKind::Rust, Layout::Root) => {
-            let head_text =
-                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
-            let index_text =
-                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
+            let head_text = git_show_text(
+                repo_root,
+                &format!("HEAD:{}", head_config.package_manifest_path),
+            )?;
+            let index_text = git_show_text(
+                repo_root,
+                &format!(":{}", index_config.package_manifest_path),
+            )?;
             Ok(vec![VersionTarget {
-                label: config.package_name.clone(),
-                path: config.package_manifest_path.clone(),
+                label: index_config.package_name.clone(),
+                path: index_config.package_manifest_path.clone(),
                 old_version: cargo_package_version(head_text.as_deref(), None).0,
                 new_version: cargo_package_version(index_text.as_deref(), None).0,
             }])
@@ -1143,16 +1104,17 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
             let index_root = git_show_text(repo_root, ":Cargo.toml")?;
             let head_workspace_version = cargo_workspace_version(head_root.as_deref());
             let index_workspace_version = cargo_workspace_version(index_root.as_deref());
-            let layout_paths = crate_layout_paths(config)?;
+            let head_layout_paths = crate_layout_paths(&head_config)?;
+            let index_layout_paths = crate_layout_paths(&index_config)?;
             let head_crate_dirs = discover_crate_dirs_from_workspace_manifest(
                 repo_root,
-                &layout_paths,
+                &head_layout_paths,
                 head_root.as_deref(),
                 "HEAD:Cargo.toml",
             )?;
             let index_crate_dirs = discover_crate_dirs_from_workspace_manifest(
                 repo_root,
-                &layout_paths,
+                &index_layout_paths,
                 index_root.as_deref(),
                 ":Cargo.toml",
             )?;
@@ -1163,15 +1125,16 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
 
             let mut targets = Vec::new();
             for crate_dir in discovered {
-                let path = package_manifest_path(config, &crate_dir);
-                let head_text = git_show_text(repo_root, &format!("HEAD:{path}"))?;
-                let index_text = git_show_text(repo_root, &format!(":{path}"))?;
+                let head_path = package_manifest_path(&head_config, &crate_dir);
+                let index_path = package_manifest_path(&index_config, &crate_dir);
+                let head_text = git_show_text(repo_root, &format!("HEAD:{head_path}"))?;
+                let index_text = git_show_text(repo_root, &format!(":{index_path}"))?;
                 if head_text.is_none() && index_text.is_none() {
                     continue;
                 }
                 targets.push(VersionTarget {
                     label: crate_dir.clone(),
-                    path,
+                    path: index_path,
                     old_version: cargo_package_version(
                         head_text.as_deref(),
                         head_workspace_version.as_deref(),
@@ -1187,25 +1150,33 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
             Ok(targets)
         }
         (ProjectKind::Python, Layout::Root) => {
-            let head_text =
-                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
-            let index_text =
-                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
+            let head_text = git_show_text(
+                repo_root,
+                &format!("HEAD:{}", head_config.package_manifest_path),
+            )?;
+            let index_text = git_show_text(
+                repo_root,
+                &format!(":{}", index_config.package_manifest_path),
+            )?;
             Ok(vec![VersionTarget {
-                label: config.package_name.clone(),
-                path: config.package_manifest_path.clone(),
+                label: index_config.package_name.clone(),
+                path: index_config.package_manifest_path.clone(),
                 old_version: pyproject_version(head_text.as_deref()),
                 new_version: pyproject_version(index_text.as_deref()),
             }])
         }
         (ProjectKind::Nodejs, Layout::Root) => {
-            let head_text =
-                git_show_text(repo_root, &format!("HEAD:{}", config.package_manifest_path))?;
-            let index_text =
-                git_show_text(repo_root, &format!(":{}", config.package_manifest_path))?;
+            let head_text = git_show_text(
+                repo_root,
+                &format!("HEAD:{}", head_config.package_manifest_path),
+            )?;
+            let index_text = git_show_text(
+                repo_root,
+                &format!(":{}", index_config.package_manifest_path),
+            )?;
             Ok(vec![VersionTarget {
-                label: config.package_name.clone(),
-                path: config.package_manifest_path.clone(),
+                label: index_config.package_name.clone(),
+                path: index_config.package_manifest_path.clone(),
                 old_version: package_json_version(head_text.as_deref()),
                 new_version: package_json_version(index_text.as_deref()),
             }])
