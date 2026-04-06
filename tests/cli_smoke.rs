@@ -433,6 +433,37 @@ fn force_reinit_refuses_to_remove_modified_generated_files() {
 }
 
 #[test]
+fn force_reinit_reports_modified_repo_check_toml_when_config_uses_tables() {
+    let repo = TempDir::new("force-reinit-config-toml");
+    run_cli([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--no-git-init",
+    ]);
+
+    append_to_file(
+        &repo.path().join("repo-check.toml"),
+        "\n[extra]\nowner = \"foundation\"\n",
+    );
+
+    let output = run_cli_failure([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--force",
+        "--no-git-init",
+    ]);
+    assert!(output.contains("previously generated files were modified by hand"));
+    assert!(output.contains("repo-check.toml"));
+    assert!(!output.contains("invalid config line"));
+}
+
+#[test]
 fn generated_agents_use_validation_commands_instead_of_fake_test_paths() {
     let rust_root = init_repo(
         "rust-root-agents",
@@ -886,6 +917,9 @@ where
 }
 
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
     let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
     let mut command = Command::new("cargo");
     command
@@ -912,6 +946,9 @@ fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
 }
 
 fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
     let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
     let mut command = Command::new("cargo");
     command
@@ -1198,6 +1235,11 @@ fn repo_template_root() -> PathBuf {
 }
 
 fn template_fixture_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn generated_repo_check_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
