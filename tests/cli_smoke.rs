@@ -323,11 +323,11 @@ fn generated_rust_repo_check_git_flow_passes() {
 }
 
 #[test]
-fn rust_package_names_reject_numeric_defaults_and_flags() {
+fn rust_package_names_stabilize_numeric_defaults_and_flags() {
     let sandbox = TempDir::new("numeric-rust-names");
 
     let derived_target = sandbox.path().join("123-derived-rust");
-    let derived_output = run_cli_failure([
+    run_cli([
         "init",
         derived_target.to_string_lossy().as_ref(),
         "--project",
@@ -336,11 +336,14 @@ fn rust_package_names_reject_numeric_defaults_and_flags() {
         "crate",
         "--no-git-init",
     ]);
-    assert!(derived_output.contains("derived Rust package name is invalid"));
-    assert!(derived_output.contains("--package-name"));
+    assert!(
+        derived_target
+            .join("crates/app-123-derived-rust/Cargo.toml")
+            .is_file()
+    );
 
     let explicit_target = sandbox.path().join("rust-explicit");
-    let explicit_output = run_cli_failure([
+    run_cli([
         "init",
         explicit_target.to_string_lossy().as_ref(),
         "--project",
@@ -353,25 +356,34 @@ fn rust_package_names_reject_numeric_defaults_and_flags() {
         "123-explicit-dir",
         "--no-git-init",
     ]);
-    assert!(explicit_output.contains("provided Rust package name is invalid"));
+    let explicit_manifest = explicit_target.join("crates/123-explicit-dir/Cargo.toml");
+    assert!(explicit_manifest.is_file());
+    assert!(
+        fs::read_to_string(explicit_manifest)
+            .expect("read explicit rust manifest")
+            .contains("name = \"app-123-explicit-rust\"")
+    );
 }
 
 #[test]
-fn python_import_package_name_rejects_numeric_distribution_defaults() {
+fn python_import_package_name_stabilizes_numeric_distribution_defaults() {
     let sandbox = TempDir::new("numeric-python-names");
     let derived_target = sandbox.path().join("123-python-derived");
-    let derived_output = run_cli_failure([
+    run_cli([
         "init",
         derived_target.to_string_lossy().as_ref(),
         "--project",
         "python",
         "--no-git-init",
     ]);
-    assert!(derived_output.contains("derived Python import package name is invalid"));
-    assert!(derived_output.contains("--package-name"));
+    assert!(
+        derived_target
+            .join("pkg_123_python_derived/__init__.py")
+            .is_file()
+    );
 
     let target = sandbox.path().join("python-explicit");
-    let output = run_cli_failure([
+    run_cli([
         "init",
         target.to_string_lossy().as_ref(),
         "--project",
@@ -380,26 +392,25 @@ fn python_import_package_name_rejects_numeric_distribution_defaults() {
         "123-python-app",
         "--no-git-init",
     ]);
-    assert!(output.contains("derived Python import package name is invalid"));
+    assert!(target.join("pkg_123_python_app/__init__.py").is_file());
 }
 
 #[test]
-fn python_import_package_name_rejects_reserved_keywords() {
+fn python_import_package_name_stabilizes_reserved_keywords() {
     let sandbox = TempDir::new("python-keyword-names");
 
     let derived_target = sandbox.path().join("async");
-    let derived_output = run_cli_failure([
+    run_cli([
         "init",
         derived_target.to_string_lossy().as_ref(),
         "--project",
         "python",
         "--no-git-init",
     ]);
-    assert!(derived_output.contains("derived Python import package name is invalid"));
-    assert!(derived_output.contains("reserved Python keyword"));
+    assert!(derived_target.join("pkg_async/__init__.py").is_file());
 
     let explicit_target = sandbox.path().join("python-explicit-keyword");
-    let explicit_output = run_cli_failure([
+    run_cli([
         "init",
         explicit_target.to_string_lossy().as_ref(),
         "--project",
@@ -408,8 +419,7 @@ fn python_import_package_name_rejects_reserved_keywords() {
         "async",
         "--no-git-init",
     ]);
-    assert!(explicit_output.contains("derived Python import package name is invalid"));
-    assert!(explicit_output.contains("reserved Python keyword"));
+    assert!(explicit_target.join("pkg_async/__init__.py").is_file());
 }
 
 #[test]

@@ -1280,10 +1280,12 @@ mod tests {
     }
 
     #[test]
-    fn rust_package_names_reject_leading_digits() {
-        let error = normalize_name("123-demo", NameKind::RustPackage, true)
-            .expect_err("leading-digit rust package should fail");
-        assert!(error.contains("starts with a digit"));
+    fn rust_package_names_stabilize_leading_digits() {
+        assert_eq!(
+            normalize_name("123-demo", NameKind::RustPackage, true)
+                .expect("stabilize rust package"),
+            "app-123-demo"
+        );
         assert_eq!(
             normalize_name("123-demo", NameKind::CrateDir, true).expect("normalize crate dir"),
             "123-demo"
@@ -1291,17 +1293,21 @@ mod tests {
     }
 
     #[test]
-    fn python_import_names_reject_leading_digits() {
-        let error = normalize_name("123-demo", NameKind::PythonImportPackage, true)
-            .expect_err("leading-digit python import package should fail");
-        assert!(error.contains("starts with a digit"));
+    fn python_import_names_stabilize_leading_digits() {
+        assert_eq!(
+            normalize_name("123-demo", NameKind::PythonImportPackage, true)
+                .expect("stabilize python import package"),
+            "pkg_123_demo"
+        );
     }
 
     #[test]
-    fn python_import_names_reject_reserved_keywords() {
-        let error = normalize_name("async", NameKind::PythonImportPackage, true)
-            .expect_err("python keyword should fail");
-        assert!(error.contains("reserved Python keyword"));
+    fn python_import_names_stabilize_reserved_keywords() {
+        assert_eq!(
+            normalize_name("async", NameKind::PythonImportPackage, true)
+                .expect("stabilize python keyword"),
+            "pkg_async"
+        );
     }
 
     #[test]
@@ -1438,10 +1444,12 @@ mod tests {
     }
 
     #[test]
-    fn derived_rust_package_names_reject_invalid_repo_slug() {
-        let error = derive_default_package_name(ProjectKind::Rust, "123-demo")
-            .expect_err("derived rust package should fail");
-        assert!(error.contains("--package-name"));
+    fn derived_rust_package_names_stabilize_invalid_repo_slug() {
+        assert_eq!(
+            derive_default_package_name(ProjectKind::Rust, "123-demo")
+                .expect("stabilize derived rust package"),
+            "app-123-demo"
+        );
     }
 
     #[test]
