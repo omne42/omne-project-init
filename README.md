@@ -145,6 +145,8 @@ cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace ci
 
 GitHub Actions 定义位于 `.github/workflows/ci.yml`，当前至少覆盖这两条命令。
 
+如果要给默认分支配置 required checks，当前应直接选中 workflow 暴露的两个 job context：`test` 和 `clippy`。
+
 ## 已验证内容
 
 当前已经有可直接执行的自动化 smoke validation：

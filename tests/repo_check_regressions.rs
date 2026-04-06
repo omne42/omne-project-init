@@ -708,6 +708,68 @@ fn repo_check_config_accepts_single_quoted_toml_strings() {
 }
 
 #[test]
+fn commit_msg_uses_configured_nested_workspace_manifest_path() {
+    let repo = init_repo(
+        "nested-workspace-config",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let crate_dir = repo_slug(repo.path()).to_string();
+    fs::create_dir_all(repo.path().join("workspace/crates")).expect("create nested workspace");
+    fs::rename(
+        repo.path().join("Cargo.toml"),
+        repo.path().join("workspace/Cargo.toml"),
+    )
+    .expect("move workspace manifest");
+    fs::rename(
+        repo.path().join(format!("crates/{crate_dir}")),
+        repo.path().join(format!("workspace/crates/{crate_dir}")),
+    )
+    .expect("move primary crate into nested workspace");
+    fs::remove_dir(repo.path().join("crates")).expect("remove empty crates dir");
+
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("package_manifest_path = \"crates/{crate_dir}/Cargo.toml\""),
+        &format!("package_manifest_path = \"workspace/crates/{crate_dir}/Cargo.toml\""),
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("changelog_path = \"crates/{crate_dir}/CHANGELOG.md\""),
+        &format!("changelog_path = \"workspace/crates/{crate_dir}/CHANGELOG.md\""),
+    );
+    run_git(repo.path(), &["add", "-A"]);
+    commit_all(
+        repo.path(),
+        "refactor(repo): move workspace manifest under workspace",
+    );
+
+    replace_in_file(
+        repo.path().join("workspace/Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    git_add(repo.path(), &["workspace/Cargo.toml"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.nested-workspace");
+    fs::write(&commit_msg, "feat(repo): stable major without marker\n").expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("requires an explicit breaking commit message"),
+        "expected nested workspace manifest path to drive major bump detection, got: {error}"
+    );
+}
+
+#[test]
 fn workspace_local_accepts_running_from_a_subdirectory_without_repo_root_override() {
     let repo = init_repo(
         "subdir-workspace-local",

@@ -128,6 +128,12 @@ struct CrateLayoutPaths {
     changelog_name: String,
 }
 
+#[derive(Clone, Debug)]
+struct WorkspaceManifestLocation {
+    path: String,
+    text: String,
+}
+
 #[derive(Debug)]
 struct StagedState {
     paths: Vec<String>,
@@ -459,6 +465,13 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
         }
         (ProjectKind::Rust, Layout::Crate) => {
             let layout_paths = crate_layout_paths(config)?;
+            let workspace_manifest =
+                live_workspace_manifest_location(repo_root, config)?.ok_or_else(|| {
+                    format!(
+                        "repo-check: rust crate layout requires a workspace manifest reachable from {}.",
+                        config.package_manifest_path
+                    )
+                })?;
             let primary_manifest = repo_root.join(&config.package_manifest_path);
             if !primary_manifest.is_file() {
                 return Err(format!(
@@ -473,7 +486,8 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
                     config.changelog_path
                 ));
             }
-            let crate_dirs = discover_crate_dirs(repo_root, &layout_paths)?;
+            let crate_dirs =
+                discover_crate_dirs(repo_root, &layout_paths, &workspace_manifest.path)?;
             if crate_dirs.is_empty() {
                 return Err(
                     "repo-check: rust crate layout requires at least one configured package manifest"
@@ -677,6 +691,101 @@ fn crate_layout_paths(config: &RepoConfig) -> Result<CrateLayoutPaths, String> {
     })
 }
 
+fn workspace_manifest_candidates(config: &RepoConfig) -> Result<Vec<String>, String> {
+    let manifest_path = Path::new(&config.package_manifest_path);
+    let crate_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "repo-check: invalid crate layout package_manifest_path: {}",
+            config.package_manifest_path
+        )
+    })?;
+
+    let mut candidates = Vec::new();
+    let mut current = crate_dir.parent();
+    while let Some(directory) = current {
+        let candidate = normalize_repo_relative_path(&directory.join("Cargo.toml"));
+        if !candidate.is_empty() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+        current = directory.parent();
+    }
+
+    if candidates.is_empty() {
+        return Err(format!(
+            "repo-check: crate layout package_manifest_path {} must live under a workspace container.",
+            config.package_manifest_path
+        ));
+    }
+
+    Ok(candidates)
+}
+
+fn normalize_repo_relative_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_matches('/')
+        .to_string()
+}
+
+fn workspace_manifest_parent(path: &str) -> PathBuf {
+    Path::new(path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
+}
+
+fn live_workspace_manifest_location(
+    repo_root: &Path,
+    config: &RepoConfig,
+) -> Result<Option<WorkspaceManifestLocation>, String> {
+    for candidate in workspace_manifest_candidates(config)? {
+        let full_path = repo_root.join(&candidate);
+        if !full_path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(&full_path).map_err(|error| {
+            format!(
+                "repo-check: failed to read {}: {error}",
+                full_path.display()
+            )
+        })?;
+        let has_workspace = cargo_toml(Some(&text))
+            .and_then(|parsed| parsed.get("workspace").cloned())
+            .is_some();
+        if has_workspace {
+            return Ok(Some(WorkspaceManifestLocation {
+                path: candidate,
+                text,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn git_workspace_manifest_location(
+    repo_root: &Path,
+    config: &RepoConfig,
+    revision: &str,
+) -> Result<Option<WorkspaceManifestLocation>, String> {
+    for candidate in workspace_manifest_candidates(config)? {
+        let spec = format!("{revision}:{candidate}");
+        let Some(text) = git_show_text(repo_root, &spec)? else {
+            continue;
+        };
+        let has_workspace = cargo_toml(Some(&text))
+            .and_then(|parsed| parsed.get("workspace").cloned())
+            .is_some();
+        if has_workspace {
+            return Ok(Some(WorkspaceManifestLocation {
+                path: candidate,
+                text,
+            }));
+        }
+    }
+    Ok(None)
+}
+
 fn package_dir_for_path(config: &RepoConfig, path: &str) -> Option<String> {
     let layout_paths = crate_layout_paths(config).ok()?;
     let path = Path::new(path);
@@ -712,6 +821,15 @@ fn package_changelog_path(config: &RepoConfig, crate_dir: &str) -> String {
             .replace('\\', "/");
     }
     config.changelog_path.clone()
+}
+
+fn package_manifest_path_with_layout(layout_paths: &CrateLayoutPaths, crate_dir: &str) -> String {
+    layout_paths
+        .container_dir
+        .join(crate_dir)
+        .join(&layout_paths.manifest_name)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn package_dir_from_changelog_path(config: &RepoConfig, path: &str) -> Option<String> {
@@ -1123,23 +1241,31 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
             }])
         }
         (ProjectKind::Rust, Layout::Crate) => {
-            let head_root = git_show_text(repo_root, "HEAD:Cargo.toml")?;
-            let index_root = git_show_text(repo_root, ":Cargo.toml")?;
-            let head_workspace_version = cargo_workspace_version(head_root.as_deref());
-            let index_workspace_version = cargo_workspace_version(index_root.as_deref());
             let head_layout_paths = crate_layout_paths(&head_config)?;
             let index_layout_paths = crate_layout_paths(&index_config)?;
+            let head_workspace = git_workspace_manifest_location(repo_root, &head_config, "HEAD")?;
+            let index_workspace = git_workspace_manifest_location(repo_root, &index_config, "")?;
+            let head_workspace_version =
+                cargo_workspace_version(head_workspace.as_ref().map(|value| value.text.as_str()));
+            let index_workspace_version =
+                cargo_workspace_version(index_workspace.as_ref().map(|value| value.text.as_str()));
             let head_crate_dirs = discover_crate_dirs_from_workspace_manifest(
                 repo_root,
                 &head_layout_paths,
-                head_root.as_deref(),
-                "HEAD:Cargo.toml",
+                head_workspace.as_ref().map(|value| value.text.as_str()),
+                head_workspace
+                    .as_ref()
+                    .map(|value| value.path.as_str())
+                    .unwrap_or("HEAD workspace manifest"),
             )?;
             let index_crate_dirs = discover_crate_dirs_from_workspace_manifest(
                 repo_root,
                 &index_layout_paths,
-                index_root.as_deref(),
-                ":Cargo.toml",
+                index_workspace.as_ref().map(|value| value.text.as_str()),
+                index_workspace
+                    .as_ref()
+                    .map(|value| value.path.as_str())
+                    .unwrap_or("staged workspace manifest"),
             )?;
 
             let mut discovered = BTreeSet::new();
@@ -1308,19 +1434,20 @@ fn package_json_version(text: Option<&str>) -> Option<String> {
 fn discover_crate_dirs(
     repo_root: &Path,
     layout_paths: &CrateLayoutPaths,
+    workspace_manifest_path: &str,
 ) -> Result<Vec<String>, String> {
-    let root_manifest_path = repo_root.join("Cargo.toml");
-    let root_manifest = fs::read_to_string(&root_manifest_path).map_err(|error| {
+    let manifest_path = repo_root.join(workspace_manifest_path);
+    let manifest = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
             "repo-check: failed to read {}: {error}",
-            root_manifest_path.display()
+            manifest_path.display()
         )
     })?;
     discover_crate_dirs_from_workspace_manifest(
         repo_root,
         layout_paths,
-        Some(root_manifest.as_str()),
-        &root_manifest_path.display().to_string(),
+        Some(manifest.as_str()),
+        workspace_manifest_path,
     )
 }
 
@@ -1332,12 +1459,15 @@ fn staged_active_crate_dirs(
         return Ok(BTreeSet::new());
     }
     let layout_paths = crate_layout_paths(config)?;
-    let root_manifest = git_show_text(repo_root, ":Cargo.toml")?;
+    let workspace_manifest = git_workspace_manifest_location(repo_root, config, "")?;
     Ok(discover_crate_dirs_from_workspace_manifest(
         repo_root,
         &layout_paths,
-        root_manifest.as_deref(),
-        "staged Cargo.toml",
+        workspace_manifest.as_ref().map(|value| value.text.as_str()),
+        workspace_manifest
+            .as_ref()
+            .map(|value| value.path.as_str())
+            .unwrap_or("staged workspace manifest"),
     )?
     .into_iter()
     .collect())
@@ -1367,19 +1497,34 @@ fn discover_crate_dirs_from_workspace_manifest(
         .and_then(|members| members.as_array())
         .cloned()
         .unwrap_or_default();
+    let workspace_manifest_dir = workspace_manifest_parent(source_label);
 
     let mut crate_dirs = BTreeSet::new();
     for member in members {
         let Some(member) = member.as_str() else {
             continue;
         };
-        update_workspace_crate_dirs(repo_root, layout_paths, member, true, &mut crate_dirs)?;
+        update_workspace_crate_dirs(
+            repo_root,
+            layout_paths,
+            &workspace_manifest_dir,
+            member,
+            true,
+            &mut crate_dirs,
+        )?;
     }
     for exclude in excludes {
         let Some(exclude) = exclude.as_str() else {
             continue;
         };
-        update_workspace_crate_dirs(repo_root, layout_paths, exclude, false, &mut crate_dirs)?;
+        update_workspace_crate_dirs(
+            repo_root,
+            layout_paths,
+            &workspace_manifest_dir,
+            exclude,
+            false,
+            &mut crate_dirs,
+        )?;
     }
     Ok(crate_dirs.into_iter().collect())
 }
@@ -1387,6 +1532,7 @@ fn discover_crate_dirs_from_workspace_manifest(
 fn update_workspace_crate_dirs(
     repo_root: &Path,
     layout_paths: &CrateLayoutPaths,
+    workspace_manifest_dir: &Path,
     member: &str,
     insert: bool,
     crate_dirs: &mut BTreeSet<String>,
@@ -1396,9 +1542,10 @@ fn update_workspace_crate_dirs(
         .to_string_lossy()
         .replace('\\', "/");
     let normalized = normalize_workspace_member(member);
+    let resolved = normalize_repo_relative_path(&workspace_manifest_dir.join(&normalized));
     let wildcard = format!("{container}/*");
 
-    if normalized == wildcard {
+    if resolved == wildcard {
         let crates_dir = repo_root.join(&layout_paths.container_dir);
         if !crates_dir.is_dir() {
             return Ok(());
@@ -1427,7 +1574,7 @@ fn update_workspace_crate_dirs(
         return Ok(());
     }
 
-    let candidate = Path::new(&normalized);
+    let candidate = Path::new(&resolved);
     let Ok(relative) = candidate.strip_prefix(&layout_paths.container_dir) else {
         return Ok(());
     };
@@ -1443,7 +1590,7 @@ fn update_workspace_crate_dirs(
         return Ok(());
     }
     if repo_root
-        .join(package_manifest_path_from_layout(layout_paths, crate_dir))
+        .join(package_manifest_path_with_layout(layout_paths, crate_dir))
         .is_file()
     {
         update_crate_dir_set(crate_dirs, crate_dir, insert);
@@ -1467,46 +1614,51 @@ fn update_crate_dir_set(crate_dirs: &mut BTreeSet<String>, crate_dir: &str, inse
     }
 }
 
-fn package_manifest_path_from_layout(layout_paths: &CrateLayoutPaths, crate_dir: &str) -> PathBuf {
-    layout_paths
-        .container_dir
-        .join(crate_dir)
-        .join(&layout_paths.manifest_name)
-}
-
 fn workspace_version_inheriting_crate_dirs(
     repo_root: &Path,
     config: &RepoConfig,
     staged: &StagedState,
 ) -> Result<BTreeSet<String>, String> {
-    if !staged.paths.iter().any(|path| path == "Cargo.toml") {
+    let head_workspace = git_workspace_manifest_location(repo_root, config, "HEAD")?;
+    let index_workspace = git_workspace_manifest_location(repo_root, config, "")?;
+    let Some(index_workspace) = index_workspace else {
         return Ok(BTreeSet::new());
-    }
+    };
 
-    let head_root = git_show_text(repo_root, "HEAD:Cargo.toml")?;
-    let index_root = git_show_text(repo_root, ":Cargo.toml")?;
-    if cargo_workspace_version(head_root.as_deref())
-        == cargo_workspace_version(index_root.as_deref())
+    if !staged
+        .paths
+        .iter()
+        .any(|path| path == &index_workspace.path)
     {
         return Ok(BTreeSet::new());
     }
 
-    let head_workspace_version = cargo_workspace_version(head_root.as_deref());
-    let index_workspace_version = cargo_workspace_version(index_root.as_deref());
+    if cargo_workspace_version(head_workspace.as_ref().map(|value| value.text.as_str()))
+        == cargo_workspace_version(Some(index_workspace.text.as_str()))
+    {
+        return Ok(BTreeSet::new());
+    }
+
+    let head_workspace_version =
+        cargo_workspace_version(head_workspace.as_ref().map(|value| value.text.as_str()));
+    let index_workspace_version = cargo_workspace_version(Some(index_workspace.text.as_str()));
     let mut crate_dirs = BTreeSet::new();
     let layout_paths = crate_layout_paths(config)?;
 
     let head_crate_dirs = discover_crate_dirs_from_workspace_manifest(
         repo_root,
         &layout_paths,
-        head_root.as_deref(),
-        "HEAD:Cargo.toml",
+        head_workspace.as_ref().map(|value| value.text.as_str()),
+        head_workspace
+            .as_ref()
+            .map(|value| value.path.as_str())
+            .unwrap_or("HEAD workspace manifest"),
     )?;
     let index_crate_dirs = discover_crate_dirs_from_workspace_manifest(
         repo_root,
         &layout_paths,
-        index_root.as_deref(),
-        ":Cargo.toml",
+        Some(index_workspace.text.as_str()),
+        &index_workspace.path,
     )?;
 
     let mut discovered = BTreeSet::new();
