@@ -196,14 +196,30 @@ fn generated_rust_repo_check_workspace_ci_passes_for_root_and_crate() {
 }
 
 #[test]
-fn generated_python_repo_check_workspace_local_passes_when_python_is_available() {
-    if !has_python() {
-        eprintln!("skipping python smoke test: no supported Python interpreter found");
+fn generated_python_repo_check_workspace_local_passes_when_supported_python_is_available() {
+    if !has_supported_python() {
+        eprintln!("skipping python smoke test: no Python 3.11+ interpreter found");
         return;
     }
 
     let repo = init_repo("python-smoke", &["--project", "python"]);
     run_generated_repo_check(repo.path(), &["workspace", "local"]);
+}
+
+#[test]
+fn generated_python_repo_check_rejects_requires_python_below_template_floor() {
+    let repo = init_repo("python-requires-floor", &["--project", "python"]);
+    replace_in_file(
+        &repo.path().join("pyproject.toml"),
+        "requires-python = \">=3.11\"",
+        "requires-python = \">=3.10\"",
+    );
+
+    let output = run_generated_repo_check_failure(repo.path(), &["workspace", "local"]);
+    assert!(
+        output.contains("project.requires-python` compatible with >=3.11"),
+        "expected requires-python floor failure, got:\n{output}"
+    );
 }
 
 #[test]
@@ -1202,10 +1218,26 @@ impl Drop for PathCleanup {
     }
 }
 
-fn has_python() -> bool {
-    command_works("python", &["--version"])
-        || command_works("python3", &["--version"])
-        || command_works("py", &["-3", "--version"])
+fn has_supported_python() -> bool {
+    python_command_version(&["python"]).is_some_and(|version| version >= (3, 11))
+        || python_command_version(&["python3"]).is_some_and(|version| version >= (3, 11))
+        || python_command_version(&["py", "-3"]).is_some_and(|version| version >= (3, 11))
+}
+
+fn python_command_version(command: &[&str]) -> Option<(u64, u64)> {
+    let (program, args) = command.split_first()?;
+    let mut process = Command::new(program);
+    process.args(args).args([
+        "-c",
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+    ]);
+    let output = process.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let (major, minor) = stdout.trim().split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 fn command_works(program: &str, args: &[&str]) -> bool {

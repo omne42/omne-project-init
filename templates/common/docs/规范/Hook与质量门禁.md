@@ -61,10 +61,12 @@
 
 ### python
 
+- 先读取 `pyproject.toml` 的 `[project].requires-python`，并要求它继续守住模板契约 `>=3.11`
+- 再选择满足该声明的解释器
 - `python -m compileall __PY_PACKAGE__ tests`
 - `python -m unittest discover -s tests -p 'test*.py'`
 
-Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 `py -3`。
+Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 `py -3`；如果找到了 Python，但版本不满足 `requires-python`，gate 会直接失败。
 
 ### nodejs
 

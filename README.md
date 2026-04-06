@@ -121,6 +121,8 @@ cargo run -- manifest /path/to/new-repo --project rust --layout crate
 
 生成 Rust 项目时，workspace 会把 `tools/repo-check` 直接纳入 member，确保 `workspace local` / `workspace ci` 的 `fmt`、`check`、`test`、`clippy` 会覆盖治理工具本身。
 
+生成 Python 项目时，模板会声明 `requires-python = ">=3.11"`；生成出的 `repo-check` 会按 `pyproject.toml` 当前声明选择兼容解释器，并在版本不满足时直接失败。
+
 生成后常用命令：
 
 ```bash
