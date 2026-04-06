@@ -605,6 +605,53 @@ fn generated_repo_check_requires_primary_changelog_for_root_changes_in_crate_lay
 }
 
 #[test]
+fn generated_repo_check_uses_renamed_primary_changelog_for_root_changes_in_crate_layout() {
+    let repo = init_repo(
+        "crate-root-renamed",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    let primary_crate = repo_slug(repo.path());
+    let old_changelog = format!("crates/{primary_crate}/CHANGELOG.md");
+    let new_changelog = format!("crates/{primary_crate}/HISTORY.md");
+    fs::rename(
+        repo.path().join(&old_changelog),
+        repo.path().join(&new_changelog),
+    )
+    .expect("failed to rename primary changelog");
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        &format!("changelog_path = \"{old_changelog}\""),
+        &format!("changelog_path = \"{new_changelog}\""),
+    );
+    git_add_all(repo.path());
+    git_commit_all(repo.path(), "chore(repo): rename primary changelog");
+
+    append_to_file(&repo.path().join("README.md"), "\nroot governance change\n");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains(&new_changelog),
+        "expected renamed primary changelog requirement, got:\n{output}"
+    );
+    assert!(
+        !output.contains(&old_changelog),
+        "stale default changelog path leaked into output:\n{output}"
+    );
+
+    append_to_file(
+        &repo.path().join(&new_changelog),
+        "\n- note root governance change after changelog rename\n",
+    );
+    git_add_all(repo.path());
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
 fn generated_repo_check_does_not_invent_fake_crates_from_shared_dirs() {
     let repo = init_repo(
         "crate-shared-dir",
