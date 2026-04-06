@@ -98,3 +98,8 @@ hook wrapper 会把 Unix 路径、Windows 盘符绝对路径和 UNC 路径都当
 - `main` 仍应配置为受保护分支
 - 必需的 CI / CD status checks 应在合并前全部通过
 - 远端 required checks 应与默认分支实际使用的 CI 入口保持一致
+
+对当前模板生成出的 GitHub Actions 来说，`.github/workflows/ci.yml` 暴露的 required checks 就是两个 job context：
+
+- `test`
+- `clippy`
