@@ -1792,6 +1792,10 @@ fn copy_directory_entries(source: &Path, destination: &Path) -> Result<(), Strin
             copy_directory_entries(&source_path, &destination_path)?;
             continue;
         }
+        if metadata.is_symlink() {
+            copy_symlink_entry(&source_path, &destination_path)?;
+            continue;
+        }
         if metadata.is_file() {
             fs::copy(&source_path, &destination_path).map_err(|error| {
                 format!(
@@ -1803,6 +1807,69 @@ fn copy_directory_entries(source: &Path, destination: &Path) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn copy_symlink_entry(source: &Path, destination: &Path) -> Result<(), String> {
+    let link_target = fs::read_link(source).map_err(|error| {
+        format!(
+            "repo-check: failed to read symlink {}: {error}",
+            source.display()
+        )
+    })?;
+    create_symlink_snapshot_entry(source, destination, &link_target)
+}
+
+#[cfg(unix)]
+fn create_symlink_snapshot_entry(
+    source: &Path,
+    destination: &Path,
+    link_target: &Path,
+) -> Result<(), String> {
+    std::os::unix::fs::symlink(link_target, destination).map_err(|error| {
+        format!(
+            "repo-check: failed to recreate symlink {} -> {} from {}: {error}",
+            destination.display(),
+            link_target.display(),
+            source.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn create_symlink_snapshot_entry(
+    source: &Path,
+    destination: &Path,
+    link_target: &Path,
+) -> Result<(), String> {
+    let target_metadata = fs::metadata(source).map_err(|error| {
+        format!(
+            "repo-check: failed to inspect symlink target for {}: {error}",
+            source.display()
+        )
+    })?;
+    let create = if target_metadata.is_dir() {
+        std::os::windows::fs::symlink_dir
+    } else {
+        std::os::windows::fs::symlink_file
+    };
+    create(link_target, destination).map_err(|error| {
+        format!(
+            "repo-check: failed to recreate symlink {} -> {} from {}: {error}",
+            destination.display(),
+            link_target.display(),
+            source.display()
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symlink_snapshot_entry(
+    source: &Path,
+    destination: &Path,
+    link_target: &Path,
+) -> Result<(), String> {
+    let _ = (source, destination, link_target);
+    Err("repo-check: worktree snapshot does not support symlinks on this platform".to_string())
 }
 
 fn should_skip_snapshot_dir(path: &Path) -> bool {

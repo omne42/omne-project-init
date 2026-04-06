@@ -158,6 +158,25 @@ fn workspace_local_validates_declared_python_requires_python() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_local_preserves_symlinked_primary_source() {
+    if !command_works("node", &["--version"]) {
+        eprintln!("skipping symlink workspace regression: node not found");
+        return;
+    }
+
+    let repo = init_repo("node-symlink-source", &["--project", "nodejs"]);
+    let primary_source = repo.path().join("src/index.js");
+    let shared_dir = repo.path().join("shared");
+    let shared_source = shared_dir.join("index.js");
+    fs::create_dir_all(&shared_dir).expect("create shared dir");
+    fs::rename(&primary_source, &shared_source).expect("move primary source");
+    create_file_symlink(Path::new("../shared/index.js"), &primary_source);
+
+    run_generated_repo_check(repo.path(), &["workspace", "local"]);
+}
+
 #[test]
 fn workspace_local_rejects_unknown_repo_check_schema_version() {
     let repo = init_repo(
@@ -1078,6 +1097,17 @@ fn copy_dir_all(source: &Path, destination: &Path) {
             });
         }
     }
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        )
+    });
 }
 
 fn run_ok(label: &str, command: &mut Command) -> String {
