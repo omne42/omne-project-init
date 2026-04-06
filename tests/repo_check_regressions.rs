@@ -547,6 +547,48 @@ fn replace_in_file(path: PathBuf, from: &str, to: &str) {
     fs::write(&path, updated).expect("write file after replacement");
 }
 
+fn append_to_file(path: &Path, suffix: &str) {
+    let mut text = fs::read_to_string(path).expect("read file for append");
+    text.push_str(suffix);
+    fs::write(path, text).expect("write appended file");
+}
+
+fn add_workspace_crate(repo_root: &Path, crate_name: &str) {
+    let source = repo_root.join("crates").join(repo_slug(repo_root));
+    let destination = repo_root.join("crates").join(crate_name);
+    copy_dir_all(&source, &destination);
+    replace_in_file(
+        destination.join("Cargo.toml"),
+        repo_slug(repo_root),
+        crate_name,
+    );
+    replace_in_file(
+        repo_root.join("Cargo.toml"),
+        "\"crates/",
+        &format!("\"crates/{crate_name}\", \"crates/"),
+    );
+}
+
+fn copy_dir_all(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).expect("create copy destination");
+    for entry in fs::read_dir(source).expect("read copy source directory") {
+        let entry = entry.expect("read copy source entry");
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_all(&source_path, &destination_path);
+        } else {
+            fs::copy(&source_path, &destination_path).unwrap_or_else(|error| {
+                panic!(
+                    "failed to copy {} -> {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            });
+        }
+    }
+}
+
 fn run_ok(label: &str, command: &mut Command) -> String {
     let output = command
         .output()
