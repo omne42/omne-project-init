@@ -899,7 +899,7 @@ where
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = generated_repo_check_command(repo_root, args, true);
     run_ok("generated repo-check", &mut command)
 }
@@ -911,7 +911,7 @@ fn run_generated_repo_check_with_env(
 ) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = generated_repo_check_command(repo_root, args, true);
     for (key, value) in envs {
         command.env(key, value);
@@ -922,7 +922,7 @@ fn run_generated_repo_check_with_env(
 fn run_generated_repo_check_fail(repo_root: &Path, args: &[&str]) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = generated_repo_check_command(repo_root, args, true);
     run_fail("generated repo-check", &mut command)
 }
@@ -934,7 +934,7 @@ fn run_generated_repo_check_from_dir(
 ) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = generated_repo_check_command(repo_root, args, false);
     command.current_dir(current_dir);
     run_ok("generated repo-check", &mut command)
@@ -947,7 +947,7 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str], add_repo_root: 
         .arg("run")
         .arg("--quiet")
         .arg("--target-dir")
-        .arg(repo_root.join(".generated-target"))
+        .arg(generated_target_dir())
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--");
@@ -968,7 +968,7 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str], add_repo_root: 
 fn run_documented_repo_check_command(repo_root: &Path, args: &[&str]) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = Command::new("cargo");
     command
         .arg("run")
@@ -986,6 +986,17 @@ fn run_documented_repo_check_command(repo_root: &Path, args: &[&str]) -> String 
 fn generated_repo_check_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn generated_target_dir() -> PathBuf {
+    static TARGET_ROOT: OnceLock<PathBuf> = OnceLock::new();
+    TARGET_ROOT
+        .get_or_init(|| {
+            let path = env::temp_dir().join("omne-project-init-generated-target");
+            fs::create_dir_all(&path).expect("failed to create generated target root");
+            path
+        })
+        .clone()
 }
 
 fn replace_in_file(path: PathBuf, from: &str, to: &str) {
