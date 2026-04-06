@@ -71,3 +71,9 @@ OMNE_REPO_CHECK_MANIFEST=path/to/repo-check/Cargo.toml
 - `docs/docs-system-map.md`：文档系统地图
 - `docs/规范/`：提交、changelog、hook 规则
 - `repo-check.toml`：当前仓库检查器配置，也是 manifest / changelog / primary source 路径的 source of truth
+
+## 远端门禁
+
+本地 hook 和 `repo-check workspace local` 只负责把问题前移到开发机。
+
+真正保护默认分支时，还应在远端把 PR 实际会运行的必需 CI/CD job contexts 全部设为 required checks。不要只要求 workflow 名；如果一个 workflow 会展开成多个 job，应把真正承接合并门禁的 job 名逐个纳入 required checks。
