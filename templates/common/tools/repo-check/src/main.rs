@@ -1078,7 +1078,7 @@ fn major_change_targets(
         let old_major = parse_version_major(target.old_version.as_deref())?;
         let new_major = parse_version_major(target.new_version.as_deref())?;
 
-        if old_major == Some(0) || new_major == Some(0) {
+        if new_major == Some(0) {
             continue;
         }
         if config.layout == Layout::Root
@@ -1089,6 +1089,7 @@ fn major_change_targets(
             continue;
         }
         if let (Some(old_major), Some(new_major)) = (old_major, new_major)
+            && new_major > 0
             && new_major != old_major
         {
             changed.push(target);

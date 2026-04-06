@@ -9,6 +9,12 @@ use toml::Value as TomlValue;
 
 const TEMPLATE_VERSION: &str = "0.1.0";
 const IGNORED_TEMPLATE_DIR_NAMES: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
+const PYTHON_RESERVED_KEYWORDS: &[&str] = &[
+    "false", "none", "true", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
 
 type TemplateFile = (PathBuf, String);
 type RenderedTemplateFiles = std::collections::BTreeMap<String, (usize, PathBuf)>;
@@ -1015,6 +1021,16 @@ fn validate_normalized_name(
             normalized
         ));
     }
+    if kind == NameKind::PythonImportPackage && PYTHON_RESERVED_KEYWORDS.contains(&normalized) {
+        let source = if explicit { "provided" } else { "derived" };
+        return Err(format!(
+            "{source} {} is invalid: `{}` normalizes to `{}` which is a reserved Python keyword.\n\nChoose a different `{}` via `--package-name`.",
+            kind.label(),
+            original,
+            normalized,
+            kind.label()
+        ));
+    }
     Ok(())
 }
 
@@ -1091,6 +1107,13 @@ mod tests {
         let error = normalize_name("123-demo", NameKind::PythonImportPackage, true)
             .expect_err("leading-digit python import package should fail");
         assert!(error.contains("starts with a digit"));
+    }
+
+    #[test]
+    fn python_import_names_reject_reserved_keywords() {
+        let error = normalize_name("async", NameKind::PythonImportPackage, true)
+            .expect_err("python keyword should fail");
+        assert!(error.contains("reserved Python keyword"));
     }
 
     #[test]

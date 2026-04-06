@@ -380,6 +380,35 @@ fn python_import_package_name_rejects_numeric_distribution_defaults() {
 }
 
 #[test]
+fn python_import_package_name_rejects_reserved_keywords() {
+    let sandbox = TempDir::new("python-keyword-names");
+
+    let derived_target = sandbox.path().join("async");
+    let derived_output = run_cli_failure([
+        "init",
+        derived_target.to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--no-git-init",
+    ]);
+    assert!(derived_output.contains("derived Python import package name is invalid"));
+    assert!(derived_output.contains("reserved Python keyword"));
+
+    let explicit_target = sandbox.path().join("python-explicit-keyword");
+    let explicit_output = run_cli_failure([
+        "init",
+        explicit_target.to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--package-name",
+        "async",
+        "--no-git-init",
+    ]);
+    assert!(explicit_output.contains("derived Python import package name is invalid"));
+    assert!(explicit_output.contains("reserved Python keyword"));
+}
+
+#[test]
 fn init_ignores_template_build_artifacts_with_non_utf8_bytes() {
     let _guard = template_fixture_lock()
         .lock()
