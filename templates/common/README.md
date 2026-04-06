@@ -24,11 +24,20 @@ cargo run --manifest-path tools/repo-check/Cargo.toml -- install-hooks
 cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local
 ```
 
-更严格的 CI 形态：
+对 Rust 仓库，这条命令会同时执行：
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --all-features`
+- `cargo test --workspace --all-features`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+CI 复用入口：
 
 ```bash
 cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace ci
 ```
+
+当前 `workspace ci` 会沿用同一套 project gate，保留这个入口主要是为了让本地、hook 和 CI 使用同一个命令面。
 
 ## 跨平台说明
 
