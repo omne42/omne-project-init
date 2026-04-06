@@ -15,11 +15,13 @@
 
 - `docs/architecture/`
   - `system-boundaries.md`：初始化器本体、模板与治理骨架的边界。
+  - `governance-scaffold.md`：生成出的治理骨架契约与归位规则。
   - `source-layout.md`：源码树与模板目录职责。
 
 ## 新鲜度规则
 
 - 新增 project kind、layout 或治理输出时，更新 `system-boundaries.md`。
+- 调整生成出的治理骨架契约时，更新 `governance-scaffold.md`。
 - 新增目录或模板归属变化时，更新 `source-layout.md`。
 - 调整当前仓库的验证命令或 CI gate 时，更新 `README.md` 与 `.github/workflows/ci.yml` 的对应入口说明。
 - 不把模板语义和 repo-check 归位规则留在聊天记录里。

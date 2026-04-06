@@ -6,6 +6,7 @@ const REQUIRED_DOC_FILES: &[&str] = &[
     "docs/README.md",
     "docs/docs-system-map.md",
     "docs/architecture/system-boundaries.md",
+    "docs/architecture/governance-scaffold.md",
     "docs/architecture/source-layout.md",
     ".github/workflows/ci.yml",
 ];
@@ -35,11 +36,14 @@ fn readme_and_agents_point_to_doc_entrypoints() {
 
     assert!(readme.contains("docs/README.md"));
     assert!(readme.contains("docs/docs-system-map.md"));
+    assert!(readme.contains("docs/architecture/governance-scaffold.md"));
     assert!(readme.contains(".github/workflows/ci.yml"));
     assert!(readme.contains("cargo test"));
     assert!(readme.contains("cargo clippy --all-targets --all-features -- -D warnings"));
     assert!(agents.contains("docs/docs-system-map.md"));
     assert!(agents.contains("docs/architecture/system-boundaries.md"));
+    assert!(agents.contains("docs/architecture/governance-scaffold.md"));
     assert!(docs_readme.contains(".github/workflows/ci.yml"));
     assert!(docs_map.contains(".github/workflows/ci.yml"));
+    assert!(docs_map.contains("governance-scaffold.md"));
 }
