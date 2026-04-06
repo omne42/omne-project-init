@@ -278,13 +278,15 @@ fn crate_layout_allows_renaming_primary_crate_dir() {
     lib_text.push_str("\n// keep crate rename regression covered\n");
     fs::write(&lib_rs, lib_text).expect("write renamed lib.rs");
 
-    let mut changelog = fs::read_to_string(repo.path().join(format!(
-        "crates/{new_crate_dir}/CHANGELOG.md"
-    )))
+    let mut changelog = fs::read_to_string(
+        repo.path()
+            .join(format!("crates/{new_crate_dir}/CHANGELOG.md")),
+    )
     .expect("read renamed changelog");
     changelog.push_str("- rename primary crate directory\n");
     fs::write(
-        repo.path().join(format!("crates/{new_crate_dir}/CHANGELOG.md")),
+        repo.path()
+            .join(format!("crates/{new_crate_dir}/CHANGELOG.md")),
         changelog,
     )
     .expect("write renamed changelog");
@@ -360,6 +362,83 @@ fn hook_templates_recognize_windows_absolute_manifest_paths() {
     }
 }
 
+#[test]
+fn workspace_local_accepts_running_from_a_subdirectory_without_repo_root_override() {
+    let repo = init_repo(
+        "subdir-workspace-local",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let nested = repo.path().join("subdir").join("nested");
+    fs::create_dir_all(&nested).expect("create nested subdir");
+
+    let output = run_generated_repo_check_from_dir(&nested, repo.path(), &["workspace", "local"]);
+    assert!(
+        output.contains("running Local checks"),
+        "expected workspace local to resolve the repo root from a subdirectory, got: {output}"
+    );
+}
+
+#[test]
+fn install_hooks_accepts_running_from_a_subdirectory_without_repo_root_override() {
+    let repo = init_repo(
+        "subdir-install-hooks",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+
+    let nested = repo.path().join("subdir").join("nested");
+    fs::create_dir_all(&nested).expect("create nested subdir");
+
+    let output = run_generated_repo_check_from_dir(&nested, repo.path(), &["install-hooks"]);
+    assert!(
+        output.contains("Configured git hooks"),
+        "expected install-hooks to resolve the repo root from a subdirectory, got: {output}"
+    );
+}
+
+#[test]
+fn adding_a_new_nonzero_major_workspace_crate_is_not_treated_as_a_major_bump() {
+    let repo = init_repo(
+        "crate-add-major",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    run_git(repo.path(), &["add", "Cargo.toml"]);
+    run_git(
+        repo.path(),
+        &[
+            "commit",
+            "-m",
+            "feat(repo)!: enter stable major",
+        ],
+    );
+
+    add_workspace_crate(repo.path(), "support-lib");
+    let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
+    append_to_file(&repo.path().join(&primary_changelog), "\n- add support-lib crate\n");
+    append_to_file(
+        &repo.path().join("crates/support-lib/CHANGELOG.md"),
+        "\n- add support-lib crate\n",
+    );
+    run_git(repo.path(), &["add", "-A"]);
+
+    let output = run_generated_repo_check(repo.path(), &["pre-commit"]);
+    assert!(
+        !output.contains("major version change"),
+        "adding a new crate should not require major bump override:\n{output}"
+    );
+}
+
 fn init_repo(prefix: &str, args: &[&str]) -> TempDir {
     let repo = TempDir::new(prefix);
     let mut cli_args = vec![
@@ -412,16 +491,26 @@ where
 }
 
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
-    let mut command = generated_repo_check_command(repo_root, args);
+    let mut command = generated_repo_check_command(repo_root, args, true);
     run_ok("generated repo-check", &mut command)
 }
 
 fn run_generated_repo_check_fail(repo_root: &Path, args: &[&str]) -> String {
-    let mut command = generated_repo_check_command(repo_root, args);
+    let mut command = generated_repo_check_command(repo_root, args, true);
     run_fail("generated repo-check", &mut command)
 }
 
-fn generated_repo_check_command(repo_root: &Path, args: &[&str]) -> Command {
+fn run_generated_repo_check_from_dir(
+    current_dir: &Path,
+    repo_root: &Path,
+    args: &[&str],
+) -> String {
+    let mut command = generated_repo_check_command(repo_root, args, false);
+    command.current_dir(current_dir);
+    run_ok("generated repo-check", &mut command)
+}
+
+fn generated_repo_check_command(repo_root: &Path, args: &[&str], add_repo_root: bool) -> Command {
     let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
     let mut command = Command::new("cargo");
     command
@@ -440,7 +529,7 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str]) -> Command {
         }
         command.arg(arg);
     }
-    if !saw_repo_root {
+    if add_repo_root && !saw_repo_root {
         command.arg("--repo-root").arg(repo_root);
     }
     command

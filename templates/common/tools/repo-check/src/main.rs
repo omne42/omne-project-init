@@ -250,7 +250,27 @@ fn utf8_arg<'a>(value: &'a OsString, label: &str) -> Result<&'a str, String> {
 }
 
 fn normalize_repo_root(path: PathBuf) -> PathBuf {
-    path.canonicalize().unwrap_or(path)
+    let path = path.canonicalize().unwrap_or(path);
+    git_toplevel_for(&path).unwrap_or(path)
+}
+
+fn git_toplevel_for(path: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let repo_root = stdout.trim();
+    if repo_root.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(repo_root))
 }
 
 impl RepoConfig {
@@ -1086,10 +1106,6 @@ fn major_change_targets(
         let new_major = parse_version_major(target.new_version.as_deref())?;
 
         if old_major == Some(0) || new_major == Some(0) {
-            continue;
-        }
-        if old_major.is_none() && new_major.is_some_and(|value| value > 0) {
-            changed.push(target);
             continue;
         }
         if let (Some(old_major), Some(new_major)) = (old_major, new_major)
