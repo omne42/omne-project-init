@@ -1061,7 +1061,7 @@ fn require_breaking_commit_marker(
     }
 
     Err(format!(
-        "repo-check: major version change requires an explicit breaking commit message.\n\nTargets:\n{}\n\nUse Conventional Commits with `!`, for example:\n  refactor(core)!: start 1.0 transition",
+        "repo-check: major version change requires an explicit breaking commit message.\n\nTargets:\n{}\n\nDeclare the breaking change with either:\n- a `!` in the header, for example `refactor(core)!: start 1.0 transition`\n- or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer",
         bullet_list(changed_targets.iter().map(format_version_target))
     ))
 }
@@ -1624,10 +1624,17 @@ fn parse_conventional_commit(message: &str) -> Result<ParsedCommitMessage, Strin
 }
 
 fn has_breaking_footer(message: &str) -> bool {
-    message.lines().skip(1).any(|line| {
+    let mut previous_blank = false;
+    for line in message.lines().skip(1) {
         let line = line.trim_end_matches('\r');
-        line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:")
-    })
+        if previous_blank
+            && (line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:"))
+        {
+            return true;
+        }
+        previous_blank = line.trim().is_empty();
+    }
+    false
 }
 
 fn is_valid_scope_character(character: char) -> bool {
