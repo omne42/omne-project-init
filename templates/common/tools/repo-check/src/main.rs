@@ -109,6 +109,7 @@ struct RepoConfig {
     python_package: String,
     package_manifest_path: String,
     changelog_path: String,
+    primary_source_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -332,6 +333,7 @@ impl RepoConfig {
             python_package: required_value(&values, "python_package")?,
             package_manifest_path: required_value(&values, "package_manifest_path")?,
             changelog_path: required_value(&values, "changelog_path")?,
+            primary_source_path: required_value(&values, "primary_source_path")?,
         })
     }
 }
@@ -1657,13 +1659,14 @@ fn run_workspace_checks(
     mode: WorkspaceMode,
 ) -> Result<(), String> {
     eprintln!(
-        "repo-check: running {:?} checks for {} ({:?}, template {}, manifest {}, changelog {})",
+        "repo-check: running {:?} checks for {} ({:?}, template {}, manifest {}, changelog {}, source {})",
         mode,
         config.repo_name,
         config.project_kind,
         config.template_version,
         config.package_manifest_path,
-        config.changelog_path
+        config.changelog_path,
+        config.primary_source_path
     );
     if config.layout == Layout::Crate {
         eprintln!("repo-check: primary crate dir {}", config.crate_dir);
@@ -1744,7 +1747,7 @@ fn run_workspace_checks(
                 repo_root,
                 "node syntax",
                 "node",
-                &["--check", "src/index.js"],
+                &["--check", &config.primary_source_path],
             )?;
             run_named_command(repo_root, "node test", "node", &["--test"])
         }

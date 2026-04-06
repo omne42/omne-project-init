@@ -7,4 +7,4 @@ crate_dir = "__CRATE_DIR__"
 python_package = "__PY_PACKAGE__"
 package_manifest_path = "__PACKAGE_MANIFEST_PATH__"
 changelog_path = "__CHANGELOG_PATH__"
-
+primary_source_path = "__PRIMARY_SOURCE_PATH__"

@@ -15,7 +15,7 @@
 
 - `githooks/` 只负责把控制权交给 `repo-check`
 - `tools/repo-check/` 承担 branch、commit、changelog 和 workspace gate
-- `repo-check.toml` 记录当前仓库的 project kind / layout / manifest / changelog 路径，并作为这些路径检查的 source of truth
+- `repo-check.toml` 记录当前仓库的 project kind / layout / manifest / changelog / primary source 路径，并作为这些路径检查的 source of truth
 
 ## `pre-commit` 当前做什么
 
@@ -74,7 +74,7 @@ Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 
 
 ### nodejs
 
-- `node --check src/index.js`
+- `node --check <repo-check.toml 里的 primary_source_path>`
 - `node --test`
 
 ## 两种运行形态

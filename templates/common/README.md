@@ -70,4 +70,4 @@ OMNE_REPO_CHECK_MANIFEST=path/to/repo-check/Cargo.toml
 - `docs/README.md`：文档目录
 - `docs/docs-system-map.md`：文档系统地图
 - `docs/规范/`：提交、changelog、hook 规则
-- `repo-check.toml`：当前仓库检查器配置，也是 manifest / changelog 路径的 source of truth
+- `repo-check.toml`：当前仓库检查器配置，也是 manifest / changelog / primary source 路径的 source of truth
