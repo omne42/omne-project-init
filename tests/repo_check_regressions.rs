@@ -20,7 +20,10 @@ fn root_layout_docs_only_change_does_not_require_changelog() {
 
 #[test]
 fn workspace_local_rejects_rust_clippy_warnings() {
-    let repo = init_repo("rust-workspace-local-clippy", &["--project", "rust", "--layout", "root"]);
+    let repo = init_repo(
+        "rust-workspace-local-clippy",
+        &["--project", "rust", "--layout", "root"],
+    );
 
     inject_unused_variable_warning(repo.path());
 
@@ -37,7 +40,10 @@ fn workspace_local_rejects_rust_clippy_warnings() {
 
 #[test]
 fn pre_commit_rejects_rust_clippy_warnings() {
-    let repo = init_repo("rust-pre-commit-clippy", &["--project", "rust", "--layout", "root"]);
+    let repo = init_repo(
+        "rust-pre-commit-clippy",
+        &["--project", "rust", "--layout", "root"],
+    );
     git_init(repo.path());
     commit_all(repo.path(), "feat(repo): initial scaffold");
 
