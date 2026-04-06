@@ -779,7 +779,7 @@ fn requires_primary_changelog(config: &RepoConfig, staged: &StagedState) -> bool
     staged
         .paths
         .iter()
-        .filter(|path| !path.ends_with("CHANGELOG.md"))
+        .filter(|path| !is_changelog_path(config, path))
         .any(|path| {
             active_crate_dir_for_path(config, &staged.active_crate_dirs, path).is_none()
                 && !path_belongs_to_deleted_crate(config, staged, path)
