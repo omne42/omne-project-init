@@ -26,6 +26,7 @@ const ALLOWED_BRANCH_PREFIXES: &[&str] = &[
 const ALLOWED_COMMIT_TYPES: &[&str] = &[
     "feat", "fix", "docs", "refactor", "perf", "test", "chore", "build", "ci", "revert",
 ];
+const REPO_CHECK_SCHEMA_VERSION: &str = "1";
 const WORKTREE_SNAPSHOT_IGNORED_DIRS: &[&str] = &[
     ".git",
     "target",
@@ -110,6 +111,7 @@ enum CliCommand {
 #[derive(Clone, Debug)]
 struct RepoConfig {
     template_version: String,
+    schema_version: String,
     repo_name: String,
     project_kind: ProjectKind,
     layout: Layout,
@@ -340,6 +342,7 @@ impl RepoConfig {
             .map_err(|error| format!("repo-check: failed to parse {source}: {error}"))?;
         Ok(Self {
             template_version: required_value(&values, "template_version")?,
+            schema_version: required_schema_version(&values)?,
             repo_name: required_value(&values, "repo_name")?,
             project_kind: ProjectKind::parse(&required_value(&values, "project_kind")?)?,
             layout: Layout::parse(&required_value(&values, "layout")?)?,
@@ -359,6 +362,16 @@ fn required_value(values: &TomlValue, key: &str) -> Result<String, String> {
         .and_then(TomlValue::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("repo-check: missing `{key}` in repo-check.toml"))
+}
+
+fn required_schema_version(values: &TomlValue) -> Result<String, String> {
+    let schema_version = required_value(values, "schema_version")?;
+    if schema_version == REPO_CHECK_SCHEMA_VERSION {
+        return Ok(schema_version);
+    }
+    Err(format!(
+        "repo-check: unsupported repo-check.toml schema_version `{schema_version}` (expected `{REPO_CHECK_SCHEMA_VERSION}`)"
+    ))
 }
 
 fn install_hooks(repo_root: &Path) -> Result<(), String> {
@@ -1688,7 +1701,7 @@ fn run_workspace_checks_on_staged_snapshot(
 ) -> Result<(), String> {
     let snapshot = TempDir::new("repo-check-index")?;
     export_index_snapshot(repo_root, snapshot.path())?;
-    run_workspace_checks(snapshot.path(), config, mode)
+    run_workspace_checks(snapshot.path(), repo_root, config, mode)
 }
 
 fn run_workspace_checks_on_worktree_snapshot(
@@ -1698,7 +1711,7 @@ fn run_workspace_checks_on_worktree_snapshot(
 ) -> Result<(), String> {
     let snapshot = TempDir::new("repo-check-worktree")?;
     copy_worktree_snapshot(repo_root, snapshot.path())?;
-    run_workspace_checks(snapshot.path(), config, mode)
+    run_workspace_checks(snapshot.path(), repo_root, config, mode)
 }
 
 fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), String> {
@@ -1883,15 +1896,17 @@ fn conventional_commit_error(line: &str) -> String {
 
 fn run_workspace_checks(
     repo_root: &Path,
+    target_root_key: &Path,
     config: &RepoConfig,
     mode: WorkspaceMode,
 ) -> Result<(), String> {
     eprintln!(
-        "repo-check: running {:?} checks for {} ({:?}, template {}, manifest {}, changelog {}, source {})",
+        "repo-check: running {:?} checks for {} ({:?}, template {}, schema {}, manifest {}, changelog {}, source {})",
         mode,
         config.repo_name,
         config.project_kind,
         config.template_version,
+        config.schema_version,
         config.package_manifest_path,
         config.changelog_path,
         config.primary_source_path
@@ -1902,23 +1917,27 @@ fn run_workspace_checks(
 
     match config.project_kind {
         ProjectKind::Rust => {
+            let cargo_target_dir = shared_cargo_target_dir(target_root_key)?;
             run_named_command(
                 repo_root,
                 "rust fmt",
                 "cargo",
                 &["fmt", "--all", "--", "--check"],
+                Some(cargo_target_dir.as_path()),
             )?;
             run_named_command(
                 repo_root,
                 "rust check",
                 "cargo",
                 &["check", "--workspace", "--all-targets", "--all-features"],
+                Some(cargo_target_dir.as_path()),
             )?;
             run_named_command(
                 repo_root,
                 "rust test",
                 "cargo",
                 &["test", "--workspace", "--all-features"],
+                Some(cargo_target_dir.as_path()),
             )?;
             run_named_command(
                 repo_root,
@@ -1933,6 +1952,7 @@ fn run_workspace_checks(
                     "-D",
                     "warnings",
                 ],
+                Some(cargo_target_dir.as_path()),
             )?;
             Ok(())
         }
@@ -1976,10 +1996,33 @@ fn run_workspace_checks(
                 "node syntax",
                 "node",
                 &["--check", &config.primary_source_path],
+                None,
             )?;
-            run_named_command(repo_root, "node test", "node", &["--test"])
+            run_named_command(repo_root, "node test", "node", &["--test"], None)
         }
     }
+}
+
+fn shared_cargo_target_dir(_target_root_key: &Path) -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(path);
+        fs::create_dir_all(&path).map_err(|error| {
+            format!(
+                "repo-check: failed to create CARGO_TARGET_DIR {}: {error}",
+                path.display()
+            )
+        })?;
+        return Ok(path);
+    }
+
+    let path = env::temp_dir().join("omne-repo-check-target");
+    fs::create_dir_all(&path).map_err(|error| {
+        format!(
+            "repo-check: failed to create shared cargo target dir {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
 }
 
 fn detect_python_runtime(
@@ -2256,10 +2299,12 @@ fn run_named_command(
     label: &str,
     program: &str,
     args: &[&str],
+    cargo_target_dir: Option<&Path>,
 ) -> Result<(), String> {
     eprintln!("repo-check: {label}");
     let mut command = Command::new(program);
     command.current_dir(repo_root).args(args);
+    maybe_set_cargo_target_dir(&mut command, program, cargo_target_dir);
     run_command_checked(label, &mut command)
 }
 
@@ -2280,6 +2325,18 @@ fn run_prefixed_command(
     }
     command.args(args);
     run_command_checked(label, &mut command)
+}
+
+fn maybe_set_cargo_target_dir(
+    command: &mut Command,
+    program: &str,
+    cargo_target_dir: Option<&Path>,
+) {
+    if program == "cargo"
+        && let Some(path) = cargo_target_dir
+    {
+        command.env("CARGO_TARGET_DIR", path);
+    }
 }
 
 fn run_command_checked(label: &str, command: &mut Command) -> Result<(), String> {
