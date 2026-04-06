@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -209,6 +209,80 @@ fn commit_msg_detects_single_line_node_major_bump() {
     assert!(
         error.contains("requires an explicit breaking commit message"),
         "expected breaking marker failure, got: {error}"
+    );
+}
+
+#[test]
+fn pre_commit_requires_override_for_stable_major_transition() {
+    let repo = init_repo(
+        "rust-stable-major-pre-commit",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    append_to_file(&repo.path().join("CHANGELOG.md"), "- enter stable major\n");
+    git_add(repo.path(), &["Cargo.toml", "CHANGELOG.md"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("refusing major version change by default"),
+        "expected stable major transition to require override, got: {error}"
+    );
+
+    run_generated_repo_check_with_env(
+        repo.path(),
+        &[("OMNE_ALLOW_MAJOR_VERSION_BUMP", "1")],
+        &["pre-commit"],
+    );
+}
+
+#[test]
+fn commit_msg_requires_breaking_marker_for_stable_major_transition() {
+    let repo = init_repo(
+        "rust-stable-major-commit-msg",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    git_add(repo.path(), &["Cargo.toml"]);
+
+    let plain_commit_msg = repo.path().join("COMMIT_EDITMSG.plain");
+    fs::write(&plain_commit_msg, "feat(repo): enter stable major\n").expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            plain_commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("requires an explicit breaking commit message"),
+        "expected stable major transition to require breaking marker, got: {error}"
+    );
+
+    let breaking_commit_msg = repo.path().join("COMMIT_EDITMSG.breaking");
+    fs::write(&breaking_commit_msg, "feat(repo)!: enter stable major\n")
+        .expect("write breaking commit msg");
+    run_generated_repo_check(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            breaking_commit_msg.to_string_lossy().as_ref(),
+        ],
     );
 }
 
@@ -696,11 +770,32 @@ where
 }
 
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
     let mut command = generated_repo_check_command(repo_root, args, true);
     run_ok("generated repo-check", &mut command)
 }
 
+fn run_generated_repo_check_with_env(
+    repo_root: &Path,
+    envs: &[(&str, &str)],
+    args: &[&str],
+) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
+    let mut command = generated_repo_check_command(repo_root, args, true);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    run_ok("generated repo-check", &mut command)
+}
+
 fn run_generated_repo_check_fail(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
     let mut command = generated_repo_check_command(repo_root, args, true);
     run_fail("generated repo-check", &mut command)
 }
@@ -710,6 +805,9 @@ fn run_generated_repo_check_from_dir(
     repo_root: &Path,
     args: &[&str],
 ) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
     let mut command = generated_repo_check_command(repo_root, args, false);
     command.current_dir(current_dir);
     run_ok("generated repo-check", &mut command)
@@ -738,6 +836,11 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str], add_repo_root: 
         command.arg("--repo-root").arg(repo_root);
     }
     command
+}
+
+fn generated_repo_check_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn replace_in_file(path: PathBuf, from: &str, to: &str) {
