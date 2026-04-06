@@ -124,6 +124,7 @@ struct StagedState {
     deleted_paths: BTreeSet<String>,
     changelog_paths: Vec<String>,
     non_changelog_count: usize,
+    active_crate_dirs: BTreeSet<String>,
     crate_dirs_with_non_changelog_changes: BTreeSet<String>,
 }
 
@@ -415,7 +416,7 @@ fn run_pre_commit(repo_root: &Path, config: &RepoConfig) -> Result<(), String> {
     }
 
     require_major_bump_override(repo_root, config)?;
-    validate_allowed_changelog_paths(repo_root, config, &staged)?;
+    validate_allowed_changelog_paths(config, &staged)?;
     validate_required_changelog_not_deleted(config, &staged)?;
     validate_changelog_update(repo_root, config, &staged)?;
     validate_not_changelog_only(&staged)?;
@@ -550,6 +551,7 @@ fn collect_staged_state(repo_root: &Path, config: &RepoConfig) -> Result<StagedS
         false,
     )?;
 
+    let active_crate_dirs = staged_active_crate_dirs(repo_root, config)?;
     let paths = split_null_terminated(&changed);
     let deleted_paths: BTreeSet<String> = split_null_terminated(&deleted).into_iter().collect();
     let changelog_paths: Vec<String> = paths
@@ -564,7 +566,7 @@ fn collect_staged_state(repo_root: &Path, config: &RepoConfig) -> Result<StagedS
     let crate_dirs_with_non_changelog_changes = paths
         .iter()
         .filter(|path| !is_changelog_path(config, path))
-        .filter_map(|path| active_crate_dir_for_path(repo_root, config, path))
+        .filter_map(|path| active_crate_dir_for_path(config, &active_crate_dirs, path))
         .collect();
 
     Ok(StagedState {
@@ -572,6 +574,7 @@ fn collect_staged_state(repo_root: &Path, config: &RepoConfig) -> Result<StagedS
         deleted_paths,
         changelog_paths,
         non_changelog_count,
+        active_crate_dirs,
         crate_dirs_with_non_changelog_changes,
     })
 }
@@ -732,12 +735,13 @@ fn is_package_changelog_path(path: &str, layout_paths: &CrateLayoutPaths) -> boo
         && changelog_name.as_os_str() == std::ffi::OsStr::new(&layout_paths.changelog_name)
 }
 
-fn active_crate_dir_for_path(repo_root: &Path, config: &RepoConfig, path: &str) -> Option<String> {
+fn active_crate_dir_for_path(
+    config: &RepoConfig,
+    active_crate_dirs: &BTreeSet<String>,
+    path: &str,
+) -> Option<String> {
     let crate_dir = package_dir_for_path(config, path)?;
-    repo_root
-        .join(package_manifest_path(config, &crate_dir))
-        .is_file()
-        .then_some(crate_dir)
+    active_crate_dirs.contains(&crate_dir).then_some(crate_dir)
 }
 
 fn crate_manifest_deleted(config: &RepoConfig, staged: &StagedState, crate_dir: &str) -> bool {
@@ -761,7 +765,6 @@ fn is_allowed_deleted_changelog_path(
 }
 
 fn is_allowed_crate_layout_changelog_path(
-    repo_root: &Path,
     staged: &StagedState,
     config: &RepoConfig,
     path: &str,
@@ -776,26 +779,23 @@ fn is_allowed_crate_layout_changelog_path(
         return false;
     }
     package_dir_from_changelog_path(config, path).is_some_and(|crate_dir| {
-        repo_root
-            .join(package_manifest_path(config, &crate_dir))
-            .is_file()
+        staged.active_crate_dirs.contains(&crate_dir)
             || crate_manifest_deleted(config, staged, &crate_dir)
     })
 }
 
-fn requires_primary_changelog(repo_root: &Path, config: &RepoConfig, staged: &StagedState) -> bool {
+fn requires_primary_changelog(config: &RepoConfig, staged: &StagedState) -> bool {
     staged
         .paths
         .iter()
         .filter(|path| !path.ends_with("CHANGELOG.md"))
         .any(|path| {
-            active_crate_dir_for_path(repo_root, config, path).is_none()
+            active_crate_dir_for_path(config, &staged.active_crate_dirs, path).is_none()
                 && !path_belongs_to_deleted_crate(config, staged, path)
         })
 }
 
 fn validate_allowed_changelog_paths(
-    repo_root: &Path,
     config: &RepoConfig,
     staged: &StagedState,
 ) -> Result<(), String> {
@@ -819,9 +819,7 @@ fn validate_allowed_changelog_paths(
             let invalid: Vec<&String> = staged
                 .changelog_paths
                 .iter()
-                .filter(|path| {
-                    !is_allowed_crate_layout_changelog_path(repo_root, staged, config, path)
-                })
+                .filter(|path| !is_allowed_crate_layout_changelog_path(staged, config, path))
                 .collect();
             if invalid.is_empty() {
                 return Ok(());
@@ -898,7 +896,7 @@ fn validate_changelog_update(
             for crate_dir in workspace_version_inheriting_crate_dirs(repo_root, config, staged)? {
                 required_paths.insert(package_changelog_path(config, &crate_dir));
             }
-            if requires_primary_changelog(repo_root, config, staged) {
+            if requires_primary_changelog(config, staged) {
                 required_paths.insert(config.changelog_path.clone());
             }
 
@@ -996,7 +994,7 @@ fn validate_released_sections_immutable(
         Layout::Crate => staged
             .changelog_paths
             .iter()
-            .filter(|path| is_allowed_crate_layout_changelog_path(repo_root, staged, config, path))
+            .filter(|path| is_allowed_crate_layout_changelog_path(staged, config, path))
             .collect(),
     };
 
@@ -1123,9 +1121,25 @@ fn version_targets(repo_root: &Path, config: &RepoConfig) -> Result<Vec<VersionT
             let head_workspace_version = cargo_workspace_version(head_root.as_deref());
             let index_workspace_version = cargo_workspace_version(index_root.as_deref());
             let layout_paths = crate_layout_paths(config)?;
+            let head_crate_dirs = discover_crate_dirs_from_workspace_manifest(
+                repo_root,
+                &layout_paths,
+                head_root.as_deref(),
+                "HEAD:Cargo.toml",
+            )?;
+            let index_crate_dirs = discover_crate_dirs_from_workspace_manifest(
+                repo_root,
+                &layout_paths,
+                index_root.as_deref(),
+                ":Cargo.toml",
+            )?;
+
+            let mut discovered = BTreeSet::new();
+            discovered.extend(head_crate_dirs);
+            discovered.extend(index_crate_dirs);
 
             let mut targets = Vec::new();
-            for crate_dir in discover_crate_dirs(repo_root, &layout_paths)? {
+            for crate_dir in discovered {
                 let path = package_manifest_path(config, &crate_dir);
                 let head_text = git_show_text(repo_root, &format!("HEAD:{path}"))?;
                 let index_text = git_show_text(repo_root, &format!(":{path}"))?;
@@ -1274,35 +1288,169 @@ fn discover_crate_dirs(
     repo_root: &Path,
     layout_paths: &CrateLayoutPaths,
 ) -> Result<Vec<String>, String> {
-    let crates_dir = repo_root.join(&layout_paths.container_dir);
-    if !crates_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut crate_dirs = Vec::new();
-    let entries = fs::read_dir(&crates_dir).map_err(|error| {
+    let root_manifest_path = repo_root.join("Cargo.toml");
+    let root_manifest = fs::read_to_string(&root_manifest_path).map_err(|error| {
         format!(
             "repo-check: failed to read {}: {error}",
-            crates_dir.display()
+            root_manifest_path.display()
         )
     })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
+    discover_crate_dirs_from_workspace_manifest(
+        repo_root,
+        layout_paths,
+        Some(root_manifest.as_str()),
+        &root_manifest_path.display().to_string(),
+    )
+}
+
+fn staged_active_crate_dirs(
+    repo_root: &Path,
+    config: &RepoConfig,
+) -> Result<BTreeSet<String>, String> {
+    if config.layout != Layout::Crate || config.project_kind != ProjectKind::Rust {
+        return Ok(BTreeSet::new());
+    }
+    let layout_paths = crate_layout_paths(config)?;
+    let root_manifest = git_show_text(repo_root, ":Cargo.toml")?;
+    Ok(discover_crate_dirs_from_workspace_manifest(
+        repo_root,
+        &layout_paths,
+        root_manifest.as_deref(),
+        "staged Cargo.toml",
+    )?
+    .into_iter()
+    .collect())
+}
+
+fn discover_crate_dirs_from_workspace_manifest(
+    repo_root: &Path,
+    layout_paths: &CrateLayoutPaths,
+    text: Option<&str>,
+    source_label: &str,
+) -> Result<Vec<String>, String> {
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
+    let parsed = cargo_toml(Some(text)).ok_or_else(|| {
+        format!("repo-check: failed to parse workspace manifest from {source_label}")
+    })?;
+    let members = parsed
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(|members| members.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let excludes = parsed
+        .get("workspace")
+        .and_then(|workspace| workspace.get("exclude"))
+        .and_then(|members| members.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut crate_dirs = BTreeSet::new();
+    for member in members {
+        let Some(member) = member.as_str() else {
+            continue;
+        };
+        update_workspace_crate_dirs(repo_root, layout_paths, member, true, &mut crate_dirs)?;
+    }
+    for exclude in excludes {
+        let Some(exclude) = exclude.as_str() else {
+            continue;
+        };
+        update_workspace_crate_dirs(repo_root, layout_paths, exclude, false, &mut crate_dirs)?;
+    }
+    Ok(crate_dirs.into_iter().collect())
+}
+
+fn update_workspace_crate_dirs(
+    repo_root: &Path,
+    layout_paths: &CrateLayoutPaths,
+    member: &str,
+    insert: bool,
+    crate_dirs: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let container = layout_paths
+        .container_dir
+        .to_string_lossy()
+        .replace('\\', "/");
+    let normalized = normalize_workspace_member(member);
+    let wildcard = format!("{container}/*");
+
+    if normalized == wildcard {
+        let crates_dir = repo_root.join(&layout_paths.container_dir);
+        if !crates_dir.is_dir() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&crates_dir).map_err(|error| {
             format!(
-                "repo-check: failed to read {} entry: {error}",
+                "repo-check: failed to read {}: {error}",
                 crates_dir.display()
             )
-        })?;
-        let path = entry.path();
-        if !path.is_dir() || !path.join(&layout_paths.manifest_name).is_file() {
-            continue;
+        })? {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "repo-check: failed to read {} entry: {error}",
+                    crates_dir.display()
+                )
+            })?;
+            let path = entry.path();
+            if !path.is_dir() || !path.join(&layout_paths.manifest_name).is_file() {
+                continue;
+            }
+            let Some(crate_dir) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            update_crate_dir_set(crate_dirs, crate_dir, insert);
         }
-        if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
-            crate_dirs.push(name.to_string());
-        }
+        return Ok(());
     }
-    crate_dirs.sort();
-    Ok(crate_dirs)
+
+    let candidate = Path::new(&normalized);
+    let Ok(relative) = candidate.strip_prefix(&layout_paths.container_dir) else {
+        return Ok(());
+    };
+    let mut parts = relative.components();
+    let Some(crate_dir) = parts.next().and_then(|part| part.as_os_str().to_str()) else {
+        return Ok(());
+    };
+    let remainder: Vec<_> = parts.collect();
+    let matches_member = remainder.is_empty()
+        || (remainder.len() == 1
+            && remainder[0].as_os_str() == std::ffi::OsStr::new(&layout_paths.manifest_name));
+    if !matches_member {
+        return Ok(());
+    }
+    if repo_root
+        .join(package_manifest_path_from_layout(layout_paths, crate_dir))
+        .is_file()
+    {
+        update_crate_dir_set(crate_dirs, crate_dir, insert);
+    }
+    Ok(())
+}
+
+fn normalize_workspace_member(member: &str) -> String {
+    member
+        .trim()
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .replace('\\', "/")
+}
+
+fn update_crate_dir_set(crate_dirs: &mut BTreeSet<String>, crate_dir: &str, insert: bool) {
+    if insert {
+        crate_dirs.insert(crate_dir.to_string());
+    } else {
+        crate_dirs.remove(crate_dir);
+    }
+}
+
+fn package_manifest_path_from_layout(layout_paths: &CrateLayoutPaths, crate_dir: &str) -> PathBuf {
+    layout_paths
+        .container_dir
+        .join(crate_dir)
+        .join(&layout_paths.manifest_name)
 }
 
 fn workspace_version_inheriting_crate_dirs(
@@ -1327,7 +1475,24 @@ fn workspace_version_inheriting_crate_dirs(
     let mut crate_dirs = BTreeSet::new();
     let layout_paths = crate_layout_paths(config)?;
 
-    for crate_dir in discover_crate_dirs(repo_root, &layout_paths)? {
+    let head_crate_dirs = discover_crate_dirs_from_workspace_manifest(
+        repo_root,
+        &layout_paths,
+        head_root.as_deref(),
+        "HEAD:Cargo.toml",
+    )?;
+    let index_crate_dirs = discover_crate_dirs_from_workspace_manifest(
+        repo_root,
+        &layout_paths,
+        index_root.as_deref(),
+        ":Cargo.toml",
+    )?;
+
+    let mut discovered = BTreeSet::new();
+    discovered.extend(head_crate_dirs);
+    discovered.extend(index_crate_dirs);
+
+    for crate_dir in discovered {
         let path = package_manifest_path(config, &crate_dir);
         let head_text = git_show_text(repo_root, &format!("HEAD:{path}"))?;
         let index_text = git_show_text(repo_root, &format!(":{path}"))?;

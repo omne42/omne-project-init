@@ -550,6 +550,48 @@ fn generated_repo_check_does_not_invent_fake_crates_from_shared_dirs() {
 }
 
 #[test]
+fn generated_repo_check_ignores_non_member_scratch_crates() {
+    let repo = init_repo(
+        "crate-scratch-nonmember",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+    git_commit_all(repo.path(), "chore(repo): initial scaffold");
+
+    let scratch_dir = repo.path().join("crates/scratch/src");
+    fs::create_dir_all(&scratch_dir).expect("failed to create scratch src dir");
+    fs::write(
+        repo.path().join("crates/scratch/Cargo.toml"),
+        concat!(
+            "[package]\n",
+            "name = \"scratch\"\n",
+            "version = \"9.0.0\"\n",
+            "edition = \"2024\"\n",
+            "\n",
+            "[lib]\n",
+            "path = \"src/lib.rs\"\n",
+        ),
+    )
+    .expect("failed to write scratch manifest");
+    fs::write(scratch_dir.join("lib.rs"), "pub fn scratch() {}\n")
+        .expect("failed to write scratch source");
+    append_to_file(
+        &repo
+            .path()
+            .join(format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()))),
+        "\n- note scratch crate docs experiment\n",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check(repo.path(), &["pre-commit"]);
+    assert!(
+        !output.contains("crates/scratch/CHANGELOG.md"),
+        "scratch crate outside workspace was treated as an active package:\n{output}"
+    );
+}
+
+#[test]
 fn generated_repo_check_requires_all_inheriting_crate_changelogs_for_workspace_version_change() {
     let repo = init_repo(
         "workspace-version-bump",
