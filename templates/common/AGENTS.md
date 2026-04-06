@@ -6,6 +6,7 @@
 
 - `README.md`
 - `docs/README.md`
+- `docs/docs-system-map.md`
 - `docs/规范/README.md`
 - `repo-check.toml`
 

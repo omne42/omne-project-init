@@ -87,3 +87,13 @@ Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 
 repo-local manifest 默认是 `tools/repo-check/Cargo.toml`，也可以通过 `OMNE_REPO_CHECK_MANIFEST` 指向其他位置。
 
 hook wrapper 会把 Unix 路径、Windows 盘符绝对路径和 UNC 路径都当作绝对路径处理，不会再错误拼到仓库根目录后面。
+
+## 与远端分支保护的关系
+
+本地 hook 和 `repo-check workspace local` 负责把高频问题尽量前移到开发机。
+
+但它们不替代远端 gate：
+
+- `main` 仍应配置为受保护分支
+- 必需的 CI / CD status checks 应在合并前全部通过
+- 远端 required checks 应与默认分支实际使用的 CI 入口保持一致

@@ -24,6 +24,7 @@ fn manifest_lists_expected_files_for_supported_projects() {
         &[
             "\"githooks/pre-commit\"",
             "\"repo-check.toml\"",
+            "\"docs/docs-system-map.md\"",
             "\"tools/repo-check/src/main.rs\"",
             "\"crates/rust-crate/Cargo.toml\"",
             "\"crates/rust-crate/CHANGELOG.md\"",
@@ -42,6 +43,7 @@ fn manifest_lists_expected_files_for_supported_projects() {
             "\"pyproject.toml\"",
             "\"python_app/__init__.py\"",
             "\"CHANGELOG.md\"",
+            "\"docs/docs-system-map.md\"",
             "\"repo-check.toml\"",
         ],
     );
@@ -58,6 +60,7 @@ fn manifest_lists_expected_files_for_supported_projects() {
             "\"package.json\"",
             "\"src/index.js\"",
             "\"test/basic.test.js\"",
+            "\"docs/docs-system-map.md\"",
             "\"tools/repo-check/Cargo.toml\"",
         ],
     );
@@ -483,6 +486,32 @@ fn generated_agents_use_validation_commands_instead_of_fake_test_paths() {
     assert!(python_agents.contains(
         "主要验证命令：`cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local`"
     ));
+}
+
+#[test]
+fn generated_docs_include_map_entrypoints_and_branch_protection_policy() {
+    let repo = init_repo("docs-map", &["--project", "rust", "--layout", "root"]);
+
+    let readme = fs::read_to_string(repo.path().join("README.md")).expect("failed to read README");
+    let agents = fs::read_to_string(repo.path().join("AGENTS.md")).expect("failed to read AGENTS");
+    let docs_readme =
+        fs::read_to_string(repo.path().join("docs/README.md")).expect("failed to read docs README");
+    let docs_map = fs::read_to_string(repo.path().join("docs/docs-system-map.md"))
+        .expect("failed to read docs system map");
+    let branch_rules = fs::read_to_string(repo.path().join("docs/规范/提交与分支.md"))
+        .expect("failed to read branch policy doc");
+    let hook_rules = fs::read_to_string(repo.path().join("docs/规范/Hook与质量门禁.md"))
+        .expect("failed to read hook policy doc");
+
+    assert!(readme.contains("docs/docs-system-map.md"));
+    assert!(agents.contains("docs/docs-system-map.md"));
+    assert!(docs_readme.contains("./docs-system-map.md"));
+    assert!(docs_map.contains("docs/规范/提交与分支.md"));
+    assert!(branch_rules.contains("必需的 CI / CD status checks 全部通过"));
+    assert!(
+        hook_rules
+            .contains("本地 hook 和 `repo-check workspace local` 负责把高频问题尽量前移到开发机")
+    );
 }
 
 #[test]

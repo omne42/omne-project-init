@@ -14,6 +14,8 @@
 - `githooks/commit-msg`
 - `repo-check.toml`
 - `tools/repo-check/`
+- `docs/README.md`
+- `docs/docs-system-map.md`
 - `docs/规范/`
 - `AGENTS.md`
 
@@ -22,6 +24,7 @@
 - hook wrapper 只负责把控制权交给 `repo-check`
 - 核心规则以 Rust 实现，位于 `tools/repo-check/`
 - `repo-check.toml` 是生成仓库里的治理契约入口
+- 文档入口保持短小，并通过 `docs/docs-system-map.md` 做地图分层
 
 ## `repo-check.toml` 的稳定职责
 
@@ -66,6 +69,16 @@
 这里的 governance/root 变更包括仓库级入口、hook、治理工具和同类骨架内容。
 
 这条语义的目的，是避免 crate layout 仓库出现“代码改了，但没有任何受管 changelog 负责它”的灰区。
+
+## 主分支保护语义
+
+生成出的治理骨架不只覆盖本地 hook。
+
+模板里的规范文档还会明确：
+
+- `main` 应启用受保护分支规则
+- 合并前必须等待必需的 CI / CD checks 全部通过
+- 本地 hook 只是前移反馈，不替代远端保护
 
 ## `--force` 的安全边界
 
