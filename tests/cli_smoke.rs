@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1083,7 +1082,7 @@ where
 fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
     let mut command = Command::new("cargo");
     command
@@ -1112,7 +1111,7 @@ fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
 fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
     let _guard = generated_repo_check_lock()
         .lock()
-        .expect("generated repo-check lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let manifest_path = repo_root.join("tools/repo-check/Cargo.toml");
     let mut command = Command::new("cargo");
     command
@@ -1374,24 +1373,15 @@ fn repo_slug(repo_root: &Path) -> &str {
         .expect("temp repo path must end with a UTF-8 file name")
 }
 
-fn generated_target_dir(repo_root: &Path) -> PathBuf {
+fn generated_target_dir(_repo_root: &Path) -> PathBuf {
     static TARGET_ROOT: OnceLock<PathBuf> = OnceLock::new();
-    let root = TARGET_ROOT.get_or_init(|| {
-        let path = env::temp_dir().join("omne-project-init-generated-target");
-        fs::create_dir_all(&path).expect("failed to create generated target root");
-        path
-    });
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    repo_root.hash(&mut hasher);
-    let path = root.join(format!("{}-{:016x}", repo_slug(repo_root), hasher.finish()));
-    fs::create_dir_all(&path).unwrap_or_else(|error| {
-        panic!(
-            "failed to create generated target dir {}: {error}",
-            path.display()
-        )
-    });
-    path
+    TARGET_ROOT
+        .get_or_init(|| {
+            let path = env::temp_dir().join("omne-project-init-generated-target");
+            fs::create_dir_all(&path).expect("failed to create generated target root");
+            path
+        })
+        .clone()
 }
 
 fn repo_template_root() -> PathBuf {
