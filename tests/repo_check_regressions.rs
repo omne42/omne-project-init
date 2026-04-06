@@ -382,6 +382,25 @@ fn workspace_local_accepts_running_from_a_subdirectory_without_repo_root_overrid
 }
 
 #[test]
+fn workspace_ci_accepts_running_from_a_subdirectory_without_repo_root_override() {
+    let repo = init_repo(
+        "subdir-workspace-ci",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let nested = repo.path().join("subdir").join("nested");
+    fs::create_dir_all(&nested).expect("create nested subdir");
+
+    let output = run_generated_repo_check_from_dir(&nested, repo.path(), &["workspace", "ci"]);
+    assert!(
+        output.contains("running Ci checks"),
+        "expected workspace ci to resolve the repo root from a subdirectory, got: {output}"
+    );
+}
+
+#[test]
 fn install_hooks_accepts_running_from_a_subdirectory_without_repo_root_override() {
     let repo = init_repo(
         "subdir-install-hooks",
