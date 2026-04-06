@@ -145,6 +145,8 @@ cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace ci
 
 GitHub Actions 定义位于 `.github/workflows/ci.yml`，当前至少覆盖这两条命令。
 
+对生成出的仓库，远端 `main` 分支保护还应把 PR 实际会跑到的必需 job contexts 全部设为 required checks。只写“开启 CI”还不够；如果某个 workflow 在 PR 上会拆成多个 job，这些真正承接合并门禁的 job 名也应进入 required checks。
+
 ## 已验证内容
 
 当前已经有可直接执行的自动化 smoke validation：

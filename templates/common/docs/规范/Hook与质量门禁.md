@@ -97,4 +97,5 @@ hook wrapper 会把 Unix 路径、Windows 盘符绝对路径和 UNC 路径都当
 
 - `main` 仍应配置为受保护分支
 - 必需的 CI / CD status checks 应在合并前全部通过
-- 远端 required checks 应与默认分支实际使用的 CI 入口保持一致
+- 远端 required checks 应与 PR 实际会运行的 CI / CD job contexts 保持一致
+- 如果一个 workflow 会拆成多个 job，应该把真正承接合并门禁的 job 名逐个列入 required checks，而不是只停留在“这个 workflow 存在”
