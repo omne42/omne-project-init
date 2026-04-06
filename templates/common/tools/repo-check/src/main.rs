@@ -141,6 +141,18 @@ struct ParsedCommitMessage {
     breaking: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PythonRuntime {
+    command: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PythonVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
 fn main() {
     if let Err(error) = real_main() {
         eprintln!("{error}");
@@ -1270,6 +1282,10 @@ fn pyproject_version(text: Option<&str>) -> Option<String> {
     cargo_section_value(text, "project", "version")
 }
 
+fn pyproject_requires_python(text: Option<&str>) -> Option<String> {
+    cargo_section_value(text, "project", "requires-python")
+}
+
 fn package_json_version(text: Option<&str>) -> Option<String> {
     serde_json::from_str::<JsonValue>(text?)
         .ok()?
@@ -1671,17 +1687,33 @@ fn run_workspace_checks(
             Ok(())
         }
         ProjectKind::Python => {
-            let python = detect_python_command(repo_root)?;
+            let manifest_path = repo_root.join(&config.package_manifest_path);
+            let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+                format!(
+                    "repo-check: failed to read {}: {error}",
+                    manifest_path.display()
+                )
+            })?;
+            let requires_python =
+                pyproject_requires_python(Some(&manifest_text)).ok_or_else(|| {
+                    format!(
+                        "repo-check: {} must declare [project].requires-python",
+                        config.package_manifest_path
+                    )
+                })?;
+            validate_python_requires_python_floor(&requires_python, &config.package_manifest_path)?;
+            let python =
+                detect_python_runtime(repo_root, &requires_python, &config.package_manifest_path)?;
             run_prefixed_command(
                 repo_root,
                 "python compileall",
-                &python,
+                &python.command,
                 &["-m", "compileall", &config.python_package, "tests"],
             )?;
             run_prefixed_command(
                 repo_root,
                 "python unittest",
-                &python,
+                &python.command,
                 &[
                     "-m", "unittest", "discover", "-s", "tests", "-p", "test*.py",
                 ],
@@ -1700,20 +1732,255 @@ fn run_workspace_checks(
     }
 }
 
-fn detect_python_command(repo_root: &Path) -> Result<Vec<String>, String> {
+fn detect_python_runtime(
+    repo_root: &Path,
+    requires_python: &str,
+    manifest_path: &str,
+) -> Result<PythonRuntime, String> {
     let candidates = [
         vec!["python".to_string()],
         vec!["python3".to_string()],
         vec!["py".to_string(), "-3".to_string()],
     ];
+    let mut detected = Vec::new();
 
     for candidate in candidates {
-        if probe_prefixed_command(repo_root, &candidate, &["--version"]) {
-            return Ok(candidate);
+        let Some(version) = probe_python_version(repo_root, &candidate) else {
+            continue;
+        };
+        if python_requirement_matches(requires_python, version)? {
+            return Ok(PythonRuntime { command: candidate });
+        }
+        detected.push(format!(
+            "`{}` -> {}",
+            render_command_prefix(&candidate),
+            version
+        ));
+    }
+
+    if detected.is_empty() {
+        return Err(
+            "repo-check: unable to locate a Python interpreter. Tried `python`, `python3`, and `py -3`."
+                .to_string(),
+        );
+    }
+
+    Err(format!(
+        "repo-check: no available Python interpreter satisfies `{}` from {}.\n\nDetected interpreters:\n{}",
+        requires_python,
+        manifest_path,
+        bullet_list(detected.iter().map(String::as_str))
+    ))
+}
+
+fn validate_python_requires_python_floor(
+    requires_python: &str,
+    manifest_path: &str,
+) -> Result<(), String> {
+    if python_requirement_meets_template_floor(requires_python)? {
+        return Ok(());
+    }
+
+    Err(format!(
+        "repo-check: python project must declare `project.requires-python` compatible with >=3.11 in {}.\n\nFound: {}",
+        manifest_path, requires_python
+    ))
+}
+
+fn probe_python_version(repo_root: &Path, prefix: &[String]) -> Option<PythonVersion> {
+    let program = prefix.first()?;
+    let mut command = Command::new(program);
+    command.current_dir(repo_root);
+    if prefix.len() > 1 {
+        command.args(&prefix[1..]);
+    }
+    command.args([
+        "-c",
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
+    ]);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_python_version(stdout.trim()).ok()
+}
+
+fn render_command_prefix(prefix: &[String]) -> String {
+    prefix.join(" ")
+}
+
+fn python_requirement_matches(
+    requires_python: &str,
+    version: PythonVersion,
+) -> Result<bool, String> {
+    let mut saw_clause = false;
+    for raw_clause in requires_python.split(',') {
+        let clause = raw_clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        saw_clause = true;
+        if !python_requirement_clause_matches(clause, version)? {
+            return Ok(false);
+        }
+    }
+    if saw_clause {
+        Ok(true)
+    } else {
+        Err("repo-check: requires-python must not be empty".to_string())
+    }
+}
+
+fn python_requirement_meets_template_floor(requires_python: &str) -> Result<bool, String> {
+    for disallowed in [
+        PythonVersion {
+            major: 3,
+            minor: 9,
+            patch: 0,
+        },
+        PythonVersion {
+            major: 3,
+            minor: 10,
+            patch: 0,
+        },
+    ] {
+        if python_requirement_matches(requires_python, disallowed)? {
+            return Ok(false);
         }
     }
 
-    Err("repo-check: unable to locate a Python interpreter. Tried `python`, `python3`, and `py -3`.".to_string())
+    for allowed in [
+        PythonVersion {
+            major: 3,
+            minor: 11,
+            patch: 0,
+        },
+        PythonVersion {
+            major: 3,
+            minor: 12,
+            patch: 0,
+        },
+        PythonVersion {
+            major: 4,
+            minor: 0,
+            patch: 0,
+        },
+        PythonVersion {
+            major: 99,
+            minor: 0,
+            patch: 0,
+        },
+    ] {
+        if python_requirement_matches(requires_python, allowed)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn python_requirement_clause_matches(clause: &str, version: PythonVersion) -> Result<bool, String> {
+    for operator in [">=", "<=", "==", "!=", "~=", ">", "<"] {
+        if let Some(raw_version) = clause.strip_prefix(operator) {
+            return python_requirement_operator_matches(operator, raw_version.trim(), version);
+        }
+    }
+    Err(format!(
+        "repo-check: unsupported requires-python clause: {clause}"
+    ))
+}
+
+fn python_requirement_operator_matches(
+    operator: &str,
+    raw_version: &str,
+    version: PythonVersion,
+) -> Result<bool, String> {
+    let wildcard = raw_version.ends_with(".*");
+    let raw_version = raw_version.trim_end_matches(".*").trim();
+    let (target, segments) = parse_python_version_with_segments(raw_version)?;
+    match operator {
+        ">=" => Ok(version >= target),
+        "<=" => Ok(version <= target),
+        ">" => Ok(version > target),
+        "<" => Ok(version < target),
+        "==" if wildcard => Ok(python_version_prefix_matches(version, target, segments)),
+        "!=" if wildcard => Ok(!python_version_prefix_matches(version, target, segments)),
+        "==" => Ok(version == target),
+        "!=" => Ok(version != target),
+        "~=" => {
+            if segments < 2 {
+                return Err(format!(
+                    "repo-check: unsupported requires-python compatible release clause: {operator}{raw_version}"
+                ));
+            }
+            Ok(version >= target && version < python_compatible_upper_bound(target, segments))
+        }
+        _ => Err(format!(
+            "repo-check: unsupported requires-python clause: {operator}{raw_version}"
+        )),
+    }
+}
+
+fn python_compatible_upper_bound(version: PythonVersion, segments: usize) -> PythonVersion {
+    if segments <= 2 {
+        return PythonVersion {
+            major: version.major + 1,
+            minor: 0,
+            patch: 0,
+        };
+    }
+    PythonVersion {
+        major: version.major,
+        minor: version.minor + 1,
+        patch: 0,
+    }
+}
+
+fn python_version_prefix_matches(
+    version: PythonVersion,
+    prefix: PythonVersion,
+    segments: usize,
+) -> bool {
+    match segments {
+        1 => version.major == prefix.major,
+        2 => version.major == prefix.major && version.minor == prefix.minor,
+        _ => version == prefix,
+    }
+}
+
+fn parse_python_version(text: &str) -> Result<PythonVersion, String> {
+    parse_python_version_with_segments(text).map(|(version, _)| version)
+}
+
+fn parse_python_version_with_segments(text: &str) -> Result<(PythonVersion, usize), String> {
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.is_empty() || parts.len() > 3 {
+        return Err(format!("repo-check: invalid Python version: {text}"));
+    }
+
+    let mut numbers = [0_u64; 3];
+    for (index, part) in parts.iter().enumerate() {
+        let digits: String = part
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            return Err(format!("repo-check: invalid Python version: {text}"));
+        }
+        numbers[index] = digits
+            .parse::<u64>()
+            .map_err(|_| format!("repo-check: invalid Python version: {text}"))?;
+    }
+
+    Ok((
+        PythonVersion {
+            major: numbers[0],
+            minor: numbers[1],
+            patch: numbers[2],
+        },
+        parts.len(),
+    ))
 }
 
 fn ensure_command_available(
@@ -1732,19 +1999,6 @@ fn ensure_command_available(
             "repo-check: failed to execute `{program}`: {error}"
         )),
     }
-}
-
-fn probe_prefixed_command(repo_root: &Path, prefix: &[String], probe_args: &[&str]) -> bool {
-    let Some(program) = prefix.first() else {
-        return false;
-    };
-    let mut command = Command::new(program);
-    command.current_dir(repo_root);
-    if prefix.len() > 1 {
-        command.args(&prefix[1..]);
-    }
-    command.args(probe_args);
-    matches!(command.output(), Ok(output) if output.status.success())
 }
 
 fn run_named_command(
@@ -1970,6 +2224,12 @@ impl Drop for TempDir {
     }
 }
 
+impl std::fmt::Display for PythonVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2032,6 +2292,94 @@ mod tests {
         assert!(
             error.contains("rev-parse --verify HEAD"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn python_requirement_matches_detects_supported_versions() {
+        assert!(
+            python_requirement_matches(
+                ">=3.11,<4",
+                PythonVersion {
+                    major: 3,
+                    minor: 11,
+                    patch: 2,
+                },
+            )
+            .expect("evaluate python requirement"),
+        );
+        assert!(
+            !python_requirement_matches(
+                ">=3.11,<4",
+                PythonVersion {
+                    major: 3,
+                    minor: 10,
+                    patch: 12,
+                },
+            )
+            .expect("evaluate python requirement"),
+        );
+    }
+
+    #[test]
+    fn python_requirement_matches_supports_compatible_release_and_wildcards() {
+        assert!(
+            python_requirement_matches(
+                "~=3.11",
+                PythonVersion {
+                    major: 3,
+                    minor: 12,
+                    patch: 0,
+                },
+            )
+            .expect("evaluate compatible release"),
+        );
+        assert!(
+            python_requirement_matches(
+                "==3.11.*",
+                PythonVersion {
+                    major: 3,
+                    minor: 11,
+                    patch: 9,
+                },
+            )
+            .expect("evaluate wildcard clause"),
+        );
+        assert!(
+            !python_requirement_matches(
+                "==3.11.*",
+                PythonVersion {
+                    major: 3,
+                    minor: 12,
+                    patch: 0,
+                },
+            )
+            .expect("evaluate wildcard clause"),
+        );
+    }
+
+    #[test]
+    fn python_requirement_meets_template_floor_rejects_lower_contracts() {
+        assert!(
+            !python_requirement_meets_template_floor(">=3.10").expect("evaluate lower floor"),
+            ">=3.10 should be rejected because it admits Python 3.10"
+        );
+        assert!(
+            !python_requirement_meets_template_floor("!=3.10.*")
+                .expect("evaluate exclusion-only floor"),
+            "an exclusion-only spec should not satisfy the template floor"
+        );
+    }
+
+    #[test]
+    fn python_requirement_meets_template_floor_accepts_3_11_or_higher() {
+        assert!(
+            python_requirement_meets_template_floor(">=3.11,<4").expect("evaluate template floor"),
+            ">=3.11 should satisfy the template floor"
+        );
+        assert!(
+            python_requirement_meets_template_floor(">3.11").expect("evaluate stricter floor"),
+            "a stricter floor above 3.11 should still satisfy the template floor"
         );
     }
 

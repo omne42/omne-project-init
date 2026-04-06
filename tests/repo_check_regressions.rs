@@ -55,6 +55,27 @@ fn pre_commit_checks_staged_snapshot() {
 }
 
 #[test]
+fn workspace_local_validates_declared_python_requires_python() {
+    let repo = init_repo("python-requires-python", &["--project", "python"]);
+
+    replace_in_file(
+        repo.path().join("pyproject.toml"),
+        "requires-python = \">=3.11\"",
+        "requires-python = \">=99.0\"",
+    );
+
+    let error = run_generated_repo_check_fail(repo.path(), &["workspace", "local"]);
+    assert!(
+        error.contains("requires-python"),
+        "expected requires-python failure, got: {error}"
+    );
+    assert!(
+        error.contains(">=99.0"),
+        "expected declared python contract in failure, got: {error}"
+    );
+}
+
+#[test]
 fn commit_msg_detects_top_level_node_major_bump() {
     let repo = init_repo("node-major-bump", &["--project", "nodejs"]);
     git_init(repo.path());
