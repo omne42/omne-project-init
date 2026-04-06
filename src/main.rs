@@ -412,13 +412,96 @@ fn output_manifest(config: &InitConfig) -> Result<Vec<String>, String> {
 fn template_files(config: &InitConfig) -> Result<Vec<(PathBuf, String)>, String> {
     let mut files = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for root in template_roots(config) {
+    let template_roots = template_roots(config);
+    if let Some(tracked_files) = tracked_template_files(&template_roots)? {
+        for (template_root, source_path) in tracked_files {
+            let relative_source = source_path.strip_prefix(&template_root).map_err(|error| {
+                format!("failed to relativize {}: {error}", source_path.display())
+            })?;
+            let relative_output = render_path(relative_source, config)?;
+            if !seen.insert(relative_output.clone()) {
+                return Err(format!(
+                    "duplicate rendered template path detected: {relative_output}"
+                ));
+            }
+            files.push((source_path, relative_output));
+        }
+        return Ok(files);
+    }
+
+    for root in template_roots {
         if !root.is_dir() {
             return Err(format!("missing template directory: {}", root.display()));
         }
         collect_template_files(config, &root, &root, &mut files, &mut seen)?;
     }
     Ok(files)
+}
+
+fn tracked_template_files(
+    template_roots: &[PathBuf],
+) -> Result<Option<Vec<(PathBuf, PathBuf)>>, String> {
+    let repo_root = repo_root();
+    if !repo_root.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let mut files = Vec::new();
+    for template_root in template_roots {
+        let repo_relative = template_root.strip_prefix(&repo_root).map_err(|error| {
+            format!("failed to relativize {}: {error}", template_root.display())
+        })?;
+        let Some(tracked_paths) = git_ls_files(&repo_root, repo_relative)? else {
+            return Ok(None);
+        };
+        for tracked_path in tracked_paths {
+            let source_path = repo_root.join(&tracked_path);
+            if !source_path.starts_with(template_root) {
+                continue;
+            }
+            files.push((template_root.clone(), source_path));
+        }
+    }
+    Ok(Some(files))
+}
+
+fn git_ls_files(repo_root: &Path, pathspec: &Path) -> Result<Option<Vec<PathBuf>>, String> {
+    let normalized_pathspec = normalized_relative_template_path(pathspec)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("ls-files")
+        .arg("-z")
+        .arg("--")
+        .arg(&normalized_pathspec)
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok();
+    let Some(stdout) = stdout else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        split_null_terminated_text(&stdout)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+    ))
+}
+
+fn split_null_terminated_text(text: &str) -> Vec<String> {
+    text.split('\0')
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .collect()
 }
 
 fn collect_template_files(
@@ -990,6 +1073,7 @@ fn validate_normalized_name(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
@@ -1059,6 +1143,32 @@ mod tests {
     }
 
     #[test]
+    fn template_files_ignore_untracked_repo_artifacts_when_git_metadata_is_available() {
+        let _guard = repo_mutation_lock()
+            .lock()
+            .expect("lock repo mutation guard");
+        let local_dir = repo_root()
+            .join("templates")
+            .join("common")
+            .join("local-artifacts");
+        let _cleanup = CleanupPath(local_dir.clone());
+        fs::create_dir_all(&local_dir).expect("create local artifact dir");
+        fs::write(
+            local_dir.join("note.txt"),
+            "do not treat this as a template\n",
+        )
+        .expect("write local artifact");
+
+        let manifest = output_manifest(&test_config(Path::new("."))).expect("render manifest");
+        assert!(
+            !manifest
+                .iter()
+                .any(|path| path == "local-artifacts/note.txt"),
+            "manifest unexpectedly included an untracked template artifact: {manifest:?}"
+        );
+    }
+
+    #[test]
     fn derived_rust_package_names_reject_invalid_repo_slug() {
         let error = derive_default_package_name(ProjectKind::Rust, "123-demo")
             .expect_err("derived rust package should fail");
@@ -1118,9 +1228,16 @@ mod tests {
         }
     }
 
+    fn repo_mutation_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     struct TempDir {
         path: PathBuf,
     }
+
+    struct CleanupPath(PathBuf);
 
     impl TempDir {
         fn new(prefix: &str) -> Self {
@@ -1143,6 +1260,12 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    impl Drop for CleanupPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 }
