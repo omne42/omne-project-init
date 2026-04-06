@@ -16,6 +16,7 @@
 - 模板文件复制与占位符替换
 - `githooks/`
 - `tools/repo-check/`
+- `repo-check.toml` 驱动的治理接线
 - agent-first 最小文档地图
 
 ## 不负责什么
@@ -30,3 +31,5 @@
 - `omne-project-init` 负责生成 `repo-check` 骨架
 - 当治理规则稳定到足以跨仓共享时，应提升为独立 harness 项目
 - 在此之前，本仓继续作为模板与引导入口存在
+
+当前生成契约和 changelog 归位规则见 `docs/architecture/governance-scaffold.md`。

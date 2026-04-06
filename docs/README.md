@@ -6,7 +6,8 @@
 
 1. `docs/docs-system-map.md`
 2. `docs/architecture/system-boundaries.md`
-3. `docs/architecture/source-layout.md`
+3. `docs/architecture/governance-scaffold.md`
+4. `docs/architecture/source-layout.md`
 
 如果你想看仓库自检和 CI 入口，回到 `README.md` 和 `.github/workflows/ci.yml`。
 

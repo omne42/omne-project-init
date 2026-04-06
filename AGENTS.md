@@ -13,6 +13,7 @@
 - 想看文档入口：`docs/README.md`
 - 想看文档系统地图：`docs/docs-system-map.md`
 - 想看仓库边界：`docs/architecture/system-boundaries.md`
+- 想看治理骨架契约：`docs/architecture/governance-scaffold.md`
 - 想看源码与模板布局：`docs/architecture/source-layout.md`
 - 想看模板目录：`templates/`
 - 想看仓库目标与边界：`README.md`
