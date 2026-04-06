@@ -109,11 +109,18 @@ fn commit_msg_detects_top_level_node_major_bump() {
 
 #[test]
 fn prerelease_versions_are_accepted_by_commit_msg_gate() {
-    let repo = init_repo("rust-prerelease", &["--project", "rust", "--layout", "root"]);
+    let repo = init_repo(
+        "rust-prerelease",
+        &["--project", "rust", "--layout", "root"],
+    );
     git_init(repo.path());
     commit_all(repo.path(), "feat(repo): initial scaffold");
 
-    replace_in_file(repo.path().join("Cargo.toml"), "version = \"0.1.0\"", "version = \"1.0.0-alpha.1\"");
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0-alpha.1\"",
+    );
     git_add(repo.path(), &["Cargo.toml"]);
     commit_all(repo.path(), "feat(repo)!: enter prerelease");
 
@@ -138,14 +145,18 @@ fn prerelease_versions_are_accepted_by_commit_msg_gate() {
 
 #[test]
 fn root_layout_uses_configured_changelog_path() {
-    let repo = init_repo("root-config-changelog", &["--project", "rust", "--layout", "root"]);
+    let repo = init_repo(
+        "root-config-changelog",
+        &["--project", "rust", "--layout", "root"],
+    );
     git_init(repo.path());
     commit_all(repo.path(), "feat(repo): initial scaffold");
 
     fs::create_dir_all(repo.path().join("docs")).expect("create docs dir");
     let changelog_text =
         fs::read_to_string(repo.path().join("CHANGELOG.md")).expect("read original changelog");
-    fs::write(repo.path().join("docs/CHANGELOG.md"), changelog_text).expect("write moved changelog");
+    fs::write(repo.path().join("docs/CHANGELOG.md"), changelog_text)
+        .expect("write moved changelog");
     fs::remove_file(repo.path().join("CHANGELOG.md")).expect("remove original changelog");
     replace_in_file(
         repo.path().join("repo-check.toml"),
@@ -158,7 +169,12 @@ fn root_layout_uses_configured_changelog_path() {
     fs::write(&src_main, src_text).expect("write src/main.rs");
     git_add(
         repo.path(),
-        &["repo-check.toml", "docs/CHANGELOG.md", "CHANGELOG.md", "src/main.rs"],
+        &[
+            "repo-check.toml",
+            "docs/CHANGELOG.md",
+            "CHANGELOG.md",
+            "src/main.rs",
+        ],
     );
 
     run_generated_repo_check(repo.path(), &["pre-commit"]);
@@ -166,7 +182,10 @@ fn root_layout_uses_configured_changelog_path() {
 
 #[test]
 fn crate_layout_root_governance_changes_require_primary_changelog() {
-    let repo = init_repo("crate-root-changelog", &["--project", "rust", "--layout", "crate"]);
+    let repo = init_repo(
+        "crate-root-changelog",
+        &["--project", "rust", "--layout", "crate"],
+    );
     git_init(repo.path());
     commit_all(repo.path(), "feat(repo): initial scaffold");
 
@@ -181,6 +200,49 @@ fn crate_layout_root_governance_changes_require_primary_changelog() {
 }
 
 #[test]
+fn deleting_nested_crate_docs_changelog_is_not_treated_as_package_changelog() {
+    let repo = init_repo(
+        "crate-nested-docs-changelog",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let crate_dir = repo_slug(repo.path());
+    let nested_changelog = format!("crates/{crate_dir}/docs/CHANGELOG.md");
+    fs::create_dir_all(repo.path().join(format!("crates/{crate_dir}/docs")))
+        .expect("create docs dir");
+    fs::write(
+        repo.path().join(&nested_changelog),
+        "# nested changelog doc\n",
+    )
+    .expect("write nested changelog");
+    git_add(repo.path(), &[nested_changelog.as_str()]);
+    commit_all(repo.path(), "docs(crate): add nested changelog doc");
+
+    fs::remove_file(repo.path().join(&nested_changelog)).expect("remove nested changelog");
+    let lib_rs = repo.path().join(format!("crates/{crate_dir}/src/lib.rs"));
+    let mut lib_text = fs::read_to_string(&lib_rs).expect("read lib.rs");
+    lib_text.push_str("\n// nested docs changelog cleanup regression\n");
+    fs::write(&lib_rs, lib_text).expect("write lib.rs");
+    let primary_changelog = format!("crates/{crate_dir}/CHANGELOG.md");
+    let mut changelog =
+        fs::read_to_string(repo.path().join(&primary_changelog)).expect("read primary changelog");
+    changelog.push_str("- note nested docs changelog cleanup\n");
+    fs::write(repo.path().join(&primary_changelog), changelog).expect("write primary changelog");
+    git_add(
+        repo.path(),
+        &[
+            nested_changelog.as_str(),
+            primary_changelog.as_str(),
+            &format!("crates/{crate_dir}/src/lib.rs"),
+        ],
+    );
+
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
 fn hook_templates_recognize_windows_absolute_manifest_paths() {
     let pre_commit = fs::read_to_string("templates/common/githooks/pre-commit")
         .expect("read pre-commit hook template");
@@ -188,8 +250,14 @@ fn hook_templates_recognize_windows_absolute_manifest_paths() {
         .expect("read commit-msg hook template");
 
     for text in [&pre_commit, &commit_msg] {
-        assert!(text.contains("[A-Za-z]:/*"), "missing drive-letter path detection");
-        assert!(text.contains("[A-Za-z]:\\\\*"), "missing backslash path detection");
+        assert!(
+            text.contains("[A-Za-z]:/*"),
+            "missing drive-letter path detection"
+        );
+        assert!(
+            text.contains("[A-Za-z]:\\\\*"),
+            "missing backslash path detection"
+        );
         assert!(text.contains("\\\\\\\\*"), "missing UNC path detection");
     }
 }
@@ -283,7 +351,12 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str]) -> Command {
 fn replace_in_file(path: PathBuf, from: &str, to: &str) {
     let text = fs::read_to_string(&path).expect("read file for replacement");
     let updated = text.replace(from, to);
-    assert_ne!(text, updated, "replacement target not found in {}", path.display());
+    assert_ne!(
+        text,
+        updated,
+        "replacement target not found in {}",
+        path.display()
+    );
     fs::write(&path, updated).expect("write file after replacement");
 }
 
