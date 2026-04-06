@@ -159,6 +159,25 @@ fn workspace_local_validates_declared_python_requires_python() {
 }
 
 #[test]
+fn workspace_local_rejects_unknown_repo_check_schema_version() {
+    let repo = init_repo(
+        "repo-check-schema-version",
+        &["--project", "rust", "--layout", "root"],
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        "schema_version = \"1\"",
+        "schema_version = \"999\"",
+    );
+
+    let error = run_generated_repo_check_fail(repo.path(), &["workspace", "local"]);
+    assert!(
+        error.contains("unsupported repo-check.toml schema_version"),
+        "expected schema-version contract failure, got: {error}"
+    );
+}
+
+#[test]
 fn commit_msg_detects_top_level_node_major_bump() {
     let repo = init_repo("node-major-bump", &["--project", "nodejs"]);
     git_init(repo.path());

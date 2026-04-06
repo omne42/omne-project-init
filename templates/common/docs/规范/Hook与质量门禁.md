@@ -15,7 +15,7 @@
 
 - `githooks/` 只负责把控制权交给 `repo-check`
 - `tools/repo-check/` 承担 branch、commit、changelog 和 workspace gate
-- `repo-check.toml` 记录当前仓库的 project kind / layout / manifest / changelog / primary source 路径，并作为这些路径检查的 source of truth
+- `repo-check.toml` 记录 schema version 与当前仓库的 project kind / layout / manifest / changelog / primary source 路径，并作为这些路径检查的 source of truth
 
 ## `pre-commit` 当前做什么
 
