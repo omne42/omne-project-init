@@ -416,16 +416,15 @@ fn adding_a_new_nonzero_major_workspace_crate_is_not_treated_as_a_major_bump() {
     run_git(repo.path(), &["add", "Cargo.toml"]);
     run_git(
         repo.path(),
-        &[
-            "commit",
-            "-m",
-            "feat(repo)!: enter stable major",
-        ],
+        &["commit", "-m", "feat(repo)!: enter stable major"],
     );
 
     add_workspace_crate(repo.path(), "support-lib");
     let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
-    append_to_file(&repo.path().join(&primary_changelog), "\n- add support-lib crate\n");
+    append_to_file(
+        &repo.path().join(&primary_changelog),
+        "\n- add support-lib crate\n",
+    );
     append_to_file(
         &repo.path().join("crates/support-lib/CHANGELOG.md"),
         "\n- add support-lib crate\n",
