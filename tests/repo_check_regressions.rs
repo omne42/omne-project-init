@@ -326,6 +326,68 @@ fn root_layout_uses_configured_changelog_path() {
 }
 
 #[test]
+fn workspace_version_bump_requires_each_inheriting_crate_changelog() {
+    let repo = init_repo(
+        "crate-workspace-version-changelog",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    add_workspace_crate(repo.path(), "support-lib");
+    run_git(repo.path(), &["add", "-A"]);
+    commit_all(repo.path(), "feat(repo): add support crate");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"0.2.0\"",
+    );
+    git_add(repo.path(), &["Cargo.toml"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    let primary_changelog = format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()));
+    assert!(
+        error.contains(&primary_changelog),
+        "expected primary crate changelog requirement, got: {error}"
+    );
+    assert!(
+        error.contains("crates/support-lib/CHANGELOG.md"),
+        "expected inherited workspace version to require support-lib changelog, got: {error}"
+    );
+}
+
+#[test]
+fn retiring_a_crate_allows_deleting_its_changelog() {
+    let repo = init_repo(
+        "crate-retirement-changelog",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    add_workspace_crate(repo.path(), "support-lib");
+    run_git(repo.path(), &["add", "-A"]);
+    commit_all(repo.path(), "feat(repo): add support crate");
+
+    fs::remove_dir_all(repo.path().join("crates/support-lib")).expect("remove support-lib crate");
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "\"crates/support-lib\", ",
+        "",
+    );
+    append_to_file(
+        &repo
+            .path()
+            .join(format!("crates/{}/CHANGELOG.md", repo_slug(repo.path()))),
+        "\n- retire support-lib crate\n",
+    );
+    run_git(repo.path(), &["add", "-A"]);
+
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
 fn crate_layout_root_governance_changes_require_primary_changelog() {
     let repo = init_repo(
         "crate-root-changelog",
