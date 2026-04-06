@@ -416,12 +416,18 @@ fn run_commit_msg(
     commit_msg_file: &Path,
 ) -> Result<(), String> {
     validate_branch_name(repo_root)?;
-    let first_line = read_first_line(commit_msg_file)?;
+    let commit_message = read_commit_message(commit_msg_file)?;
+    let first_line = commit_message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('\r')
+        .to_string();
     if is_special_commit_message(&first_line) {
         return Ok(());
     }
 
-    let parsed = parse_conventional_commit(&first_line)?;
+    let parsed = parse_conventional_commit(&commit_message)?;
     require_breaking_commit_marker(repo_root, config, &parsed)
 }
 
@@ -1562,15 +1568,9 @@ fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), Str
     ))
 }
 
-fn read_first_line(path: &Path) -> Result<String, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| format!("repo-check: failed to read {}: {error}", path.display()))?;
-    Ok(text
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches('\r')
-        .to_string())
+fn read_commit_message(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path)
+        .map_err(|error| format!("repo-check: failed to read {}: {error}", path.display()))
 }
 
 fn is_special_commit_message(line: &str) -> bool {
@@ -1580,7 +1580,12 @@ fn is_special_commit_message(line: &str) -> bool {
         || line.starts_with("squash! ")
 }
 
-fn parse_conventional_commit(line: &str) -> Result<ParsedCommitMessage, String> {
+fn parse_conventional_commit(message: &str) -> Result<ParsedCommitMessage, String> {
+    let line = message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('\r');
     let (head, subject) = line
         .split_once(": ")
         .ok_or_else(|| conventional_commit_error(line))?;
@@ -1613,7 +1618,16 @@ fn parse_conventional_commit(line: &str) -> Result<ParsedCommitMessage, String> 
         return Err(conventional_commit_error(line));
     }
 
-    Ok(ParsedCommitMessage { breaking })
+    Ok(ParsedCommitMessage {
+        breaking: breaking || has_breaking_footer(message),
+    })
+}
+
+fn has_breaking_footer(message: &str) -> bool {
+    message.lines().skip(1).any(|line| {
+        let line = line.trim_end_matches('\r');
+        line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:")
+    })
 }
 
 fn is_valid_scope_character(character: char) -> bool {
