@@ -24,6 +24,7 @@ fn manifest_lists_expected_files_for_supported_projects() {
         &[
             "\"githooks/pre-commit\"",
             "\"repo-check.toml\"",
+            "\"Cargo.lock\"",
             "\"docs/docs-system-map.md\"",
             "\"tools/repo-check/src/main.rs\"",
             "\"crates/rust-crate/Cargo.toml\"",
@@ -94,6 +95,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
         "members = [\"crates/{rust_crate_slug}\", \"tools/repo-check\"]"
     )));
     assert!(crate_workspace.contains("resolver = \"3\""));
+    assert!(rust_crate.path().join("Cargo.lock").is_file());
 
     let crate_manifest = fs::read_to_string(
         rust_crate
@@ -124,6 +126,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
         .expect("failed to read root Cargo.toml");
     assert!(root_manifest.contains("edition = \"2024\""));
     assert!(root_manifest.contains("members = [\"tools/repo-check\"]"));
+    assert!(rust_root.path().join("Cargo.lock").is_file());
     assert!(rust_root.path().join("tests/basic.rs").is_file());
 
     let repo_check_manifest =

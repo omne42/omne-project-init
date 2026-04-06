@@ -26,6 +26,15 @@ const ALLOWED_BRANCH_PREFIXES: &[&str] = &[
 const ALLOWED_COMMIT_TYPES: &[&str] = &[
     "feat", "fix", "docs", "refactor", "perf", "test", "chore", "build", "ci", "revert",
 ];
+const WORKTREE_SNAPSHOT_IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "target",
+    ".generated-target",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectKind {
@@ -184,7 +193,7 @@ fn real_main() -> Result<(), String> {
             let repo_root = normalize_repo_root(repo_root);
             let config = RepoConfig::load(&repo_root)?;
             validate_layout_shape(&repo_root, &config)?;
-            run_workspace_checks(&repo_root, &config, mode)
+            run_workspace_checks_on_worktree_snapshot(&repo_root, &config, mode)
         }
         CliCommand::ValidateBranch { repo_root } => {
             validate_branch_name(&normalize_repo_root(repo_root))
@@ -1537,6 +1546,16 @@ fn run_workspace_checks_on_staged_snapshot(
     run_workspace_checks(snapshot.path(), config, mode)
 }
 
+fn run_workspace_checks_on_worktree_snapshot(
+    repo_root: &Path,
+    config: &RepoConfig,
+    mode: WorkspaceMode,
+) -> Result<(), String> {
+    let snapshot = TempDir::new("repo-check-worktree")?;
+    copy_worktree_snapshot(repo_root, snapshot.path())?;
+    run_workspace_checks(snapshot.path(), config, mode)
+}
+
 fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| {
         format!(
@@ -1569,6 +1588,69 @@ fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), Str
         prefix,
         git_output_detail(&output)
     ))
+}
+
+fn copy_worktree_snapshot(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| {
+        format!(
+            "repo-check: failed to create worktree snapshot directory {}: {error}",
+            destination.display()
+        )
+    })?;
+    copy_directory_entries(source, destination)
+}
+
+fn copy_directory_entries(source: &Path, destination: &Path) -> Result<(), String> {
+    let mut entries = fs::read_dir(source)
+        .map_err(|error| format!("repo-check: failed to read {}: {error}", source.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "repo-check: failed to read {} entry: {error}",
+                source.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = entry.file_type().map_err(|error| {
+            format!(
+                "repo-check: failed to inspect {}: {error}",
+                source_path.display()
+            )
+        })?;
+        if metadata.is_dir() {
+            if should_skip_snapshot_dir(&source_path) {
+                continue;
+            }
+            fs::create_dir_all(&destination_path).map_err(|error| {
+                format!(
+                    "repo-check: failed to create {}: {error}",
+                    destination_path.display()
+                )
+            })?;
+            copy_directory_entries(&source_path, &destination_path)?;
+            continue;
+        }
+        if metadata.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "repo-check: failed to copy {} -> {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_snapshot_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| WORKTREE_SNAPSHOT_IGNORED_DIRS.contains(&name))
 }
 
 fn read_commit_message(path: &Path) -> Result<String, String> {
