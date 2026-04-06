@@ -373,8 +373,9 @@ fn normalize_package_name(
 
 fn normalize_name(value: &str, kind: NameKind, explicit: bool) -> Result<String, String> {
     let normalized = normalize_ascii_name(value, kind.delimiter())?;
-    validate_normalized_name(value, &normalized, kind, explicit)?;
-    Ok(normalized)
+    let stabilized = stabilize_normalized_name(normalized, kind);
+    validate_normalized_name(value, &stabilized, kind, explicit)?;
+    Ok(stabilized)
 }
 
 fn normalize_ascii_name(value: &str, delimiter: char) -> Result<String, String> {
@@ -397,6 +398,30 @@ fn normalize_ascii_name(value: &str, delimiter: char) -> Result<String, String> 
         return Err("name must contain ASCII letters or digits".to_string());
     }
     Ok(result)
+}
+
+fn stabilize_normalized_name(mut normalized: String, kind: NameKind) -> String {
+    match kind {
+        NameKind::RustPackage if starts_with_ascii_digit(&normalized) => {
+            normalized = format!("app-{normalized}");
+        }
+        NameKind::PythonImportPackage => {
+            if starts_with_ascii_digit(&normalized)
+                || PYTHON_RESERVED_KEYWORDS.contains(&normalized.as_str())
+            {
+                normalized = format!("pkg_{normalized}");
+            }
+        }
+        _ => {}
+    }
+    normalized
+}
+
+fn starts_with_ascii_digit(value: &str) -> bool {
+    value
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn repo_root() -> PathBuf {
@@ -1164,10 +1189,7 @@ fn validate_normalized_name(
     explicit: bool,
 ) -> Result<(), String> {
     if matches!(kind, NameKind::RustPackage | NameKind::PythonImportPackage)
-        && normalized
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_digit())
+        && starts_with_ascii_digit(normalized)
     {
         let flag = match kind {
             NameKind::RustPackage
