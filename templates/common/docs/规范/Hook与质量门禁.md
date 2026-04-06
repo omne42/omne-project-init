@@ -45,7 +45,9 @@
 
 1. 再次校验分支名。
 2. 强制 Conventional Commits。
-3. 如果 manifest 发生非 `0` 大版本 major bump，要求提交消息带 `!`。
+3. 如果 manifest 发生非 `0` 大版本 major bump，要求提交消息显式声明 breaking change：
+   - 标题带 `!`
+   - 或 footer 使用 `BREAKING CHANGE:` / `BREAKING-CHANGE:`
 
 ## project gate
 

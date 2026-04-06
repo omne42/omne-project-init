@@ -207,6 +207,46 @@ fn commit_msg_detects_single_line_node_major_bump() {
 }
 
 #[test]
+fn commit_msg_accepts_breaking_change_footer_for_major_bump() {
+    let repo = init_repo(
+        "rust-breaking-footer",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0\"",
+    );
+    git_add(repo.path(), &["Cargo.toml"]);
+    commit_all(repo.path(), "feat(repo)!: enter stable major");
+
+    replace_in_file(
+        repo.path().join("Cargo.toml"),
+        "version = \"1.0.0\"",
+        "version = \"2.0.0\"",
+    );
+    git_add(repo.path(), &["Cargo.toml"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.test");
+    fs::write(
+        &commit_msg,
+        "refactor(repo): prepare next stable major\n\nBREAKING CHANGE: regenerate callers against the new layout\n",
+    )
+    .expect("write commit msg");
+    run_generated_repo_check(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+}
+
+#[test]
 fn prerelease_versions_are_accepted_by_commit_msg_gate() {
     let repo = init_repo(
         "rust-prerelease",
