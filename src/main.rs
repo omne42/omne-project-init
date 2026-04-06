@@ -412,13 +412,73 @@ fn output_manifest(config: &InitConfig) -> Result<Vec<String>, String> {
 fn template_files(config: &InitConfig) -> Result<Vec<(PathBuf, String)>, String> {
     let mut files = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for root in template_roots(config) {
+    let roots = template_roots(config);
+
+    if let Some(paths) = tracked_template_paths(&roots)? {
+        for path in paths {
+            let template_root = roots
+                .iter()
+                .find(|root| path.starts_with(root))
+                .ok_or_else(|| format!("tracked template path escaped template roots: {}", path.display()))?;
+            push_template_file(config, template_root, path, &mut files, &mut seen)?;
+        }
+        return Ok(files);
+    }
+
+    for root in roots {
         if !root.is_dir() {
             return Err(format!("missing template directory: {}", root.display()));
         }
         collect_template_files(config, &root, &root, &mut files, &mut seen)?;
     }
     Ok(files)
+}
+
+fn tracked_template_paths(template_roots: &[PathBuf]) -> Result<Option<Vec<PathBuf>>, String> {
+    let root = repo_root();
+    if !root.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let relative_roots: Result<Vec<String>, String> = template_roots
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .map_err(|error| {
+                    format!(
+                        "failed to relativize template root {}: {error}",
+                        path.display()
+                    )
+                })
+                .and_then(normalized_relative_template_path)
+        })
+        .collect();
+    let relative_roots = relative_roots?;
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .arg("ls-files")
+        .arg("-z")
+        .arg("--")
+        .args(&relative_roots)
+        .output()
+        .map_err(|error| format!("failed to execute git ls-files: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let mut paths: Vec<PathBuf> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| root.join(String::from_utf8_lossy(value).as_ref()))
+        .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    paths.sort();
+    Ok(Some(paths))
 }
 
 fn collect_template_files(
@@ -439,17 +499,28 @@ fn collect_template_files(
             collect_template_files(config, template_root, &entry, files, seen)?;
             continue;
         }
-        let relative_source = entry
-            .strip_prefix(template_root)
-            .map_err(|error| format!("failed to relativize {}: {error}", entry.display()))?;
-        let relative_output = render_path(relative_source, config)?;
-        if !seen.insert(relative_output.clone()) {
-            return Err(format!(
-                "duplicate rendered template path detected: {relative_output}"
-            ));
-        }
-        files.push((entry, relative_output));
+        push_template_file(config, template_root, entry, files, seen)?;
     }
+    Ok(())
+}
+
+fn push_template_file(
+    config: &InitConfig,
+    template_root: &Path,
+    source_path: PathBuf,
+    files: &mut Vec<(PathBuf, String)>,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let relative_source = source_path
+        .strip_prefix(template_root)
+        .map_err(|error| format!("failed to relativize {}: {error}", source_path.display()))?;
+    let relative_output = render_path(relative_source, config)?;
+    if !seen.insert(relative_output.clone()) {
+        return Err(format!(
+            "duplicate rendered template path detected: {relative_output}"
+        ));
+    }
+    files.push((source_path, relative_output));
     Ok(())
 }
 
