@@ -1,5 +1,5 @@
 template_version = "__TEMPLATE_VERSION__"
-schema_version = "1"
+schema_version = "__REPO_CHECK_SCHEMA_VERSION__"
 repo_name = "__REPO_NAME__"
 project_kind = "__PROJECT_KIND__"
 layout = "__LAYOUT__"
