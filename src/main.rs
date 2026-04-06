@@ -410,22 +410,28 @@ fn output_manifest(config: &InitConfig) -> Result<Vec<String>, String> {
 }
 
 fn template_files(config: &InitConfig) -> Result<Vec<(PathBuf, String)>, String> {
-    let mut files = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut files = std::collections::BTreeMap::new();
     for root in template_roots(config) {
         if !root.is_dir() {
             return Err(format!("missing template directory: {}", root.display()));
         }
-        collect_template_files(config, &root, &root, &mut files, &mut seen)?;
+        let mut root_files = std::collections::BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+        collect_template_files(config, &root, &root, &mut root_files, &mut seen)?;
+        // Later template roots are more specific and intentionally override common files.
+        files.extend(root_files);
     }
-    Ok(files)
+    Ok(files
+        .into_iter()
+        .map(|(relative_output, source_path)| (source_path, relative_output))
+        .collect())
 }
 
 fn collect_template_files(
     config: &InitConfig,
     template_root: &Path,
     current: &Path,
-    files: &mut Vec<(PathBuf, String)>,
+    files: &mut std::collections::BTreeMap<String, PathBuf>,
     seen: &mut std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     let mut entries = read_dir_entry_paths(current)?;
@@ -448,7 +454,7 @@ fn collect_template_files(
                 "duplicate rendered template path detected: {relative_output}"
             ));
         }
-        files.push((entry, relative_output));
+        files.insert(relative_output, entry);
     }
     Ok(())
 }
@@ -1010,7 +1016,7 @@ mod tests {
         .expect("write ignored binary artifact");
 
         let config = test_config(sandbox.path());
-        let mut files = Vec::new();
+        let mut files = std::collections::BTreeMap::new();
         let mut seen = std::collections::BTreeSet::new();
         collect_template_files(
             &config,
@@ -1021,7 +1027,7 @@ mod tests {
         )
         .expect("collect template files");
 
-        let rendered_paths: Vec<String> = files.into_iter().map(|(_, relative)| relative).collect();
+        let rendered_paths: Vec<String> = files.into_keys().collect();
         assert_eq!(rendered_paths, vec!["src/main.rs"]);
     }
 
