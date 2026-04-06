@@ -16,9 +16,28 @@ const PYTHON_RESERVED_KEYWORDS: &[&str] = &[
     "with", "yield",
 ];
 
-type TemplateFile = (PathBuf, String);
-type RenderedTemplateFiles = std::collections::BTreeMap<String, (usize, PathBuf)>;
+#[derive(Clone, Copy, Debug)]
+struct EmbeddedTemplateFile {
+    path: &'static str,
+    contents: &'static [u8],
+}
+
+#[derive(Clone, Debug)]
+enum TemplateSource {
+    Filesystem(PathBuf),
+    Embedded(&'static EmbeddedTemplateFile),
+}
+
+#[derive(Clone, Debug)]
+struct TemplateFile {
+    source: TemplateSource,
+    relative_output: String,
+}
+
+type RenderedTemplateFiles = std::collections::BTreeMap<String, (usize, TemplateSource)>;
 type TrackedTemplateFile = (usize, PathBuf, PathBuf);
+
+include!(concat!(env!("OUT_DIR"), "/embedded_templates.rs"));
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectKind {
@@ -174,6 +193,7 @@ fn real_main() -> Result<(), String> {
     let command = parse_cli(env::args_os().skip(1))?;
     match command {
         CliCommand::Init(config) => {
+            preflight_init_environment(&config)?;
             prepare_target_dir(&config)?;
             let written = write_files(&config)?;
             maybe_init_git_repo(&config)?;
@@ -412,42 +432,112 @@ fn template_roots(config: &InitConfig) -> Vec<PathBuf> {
     paths
 }
 
+fn embedded_template_prefixes(config: &InitConfig) -> Vec<String> {
+    let mut paths = vec!["templates/common/".to_string()];
+    match config.project_kind {
+        ProjectKind::Rust => {
+            paths.push(format!(
+                "templates/projects/rust/{}/",
+                config.layout.as_str()
+            ));
+        }
+        ProjectKind::Python => {
+            paths.push("templates/projects/python/root/".to_string());
+        }
+        ProjectKind::Nodejs => {
+            paths.push("templates/projects/nodejs/root/".to_string());
+        }
+    }
+    paths
+}
+
 fn output_manifest(config: &InitConfig) -> Result<Vec<String>, String> {
     let mut manifest: Vec<String> = template_files(config)?
         .into_iter()
-        .map(|(_, relative)| relative)
+        .map(|file| file.relative_output)
         .collect();
     manifest.sort();
     Ok(manifest)
 }
 
 fn template_files(config: &InitConfig) -> Result<Vec<TemplateFile>, String> {
-    let mut files = RenderedTemplateFiles::new();
     let template_roots = template_roots(config);
+    template_files_with_roots(config, &template_roots)
+}
+
+fn template_files_with_roots(
+    config: &InitConfig,
+    template_roots: &[PathBuf],
+) -> Result<Vec<TemplateFile>, String> {
+    if template_roots.iter().all(|root| root.is_dir()) {
+        return template_files_from_filesystem(config, &template_roots);
+    }
+    embedded_template_files(config)
+}
+
+fn template_files_from_filesystem(
+    config: &InitConfig,
+    template_roots: &[PathBuf],
+) -> Result<Vec<TemplateFile>, String> {
+    let mut files = RenderedTemplateFiles::new();
     if let Some(tracked_files) = tracked_template_files(&template_roots)? {
         for (root_index, template_root, source_path) in tracked_files {
             let relative_source = source_path.strip_prefix(&template_root).map_err(|error| {
                 format!("failed to relativize {}: {error}", source_path.display())
             })?;
             let relative_output = render_path(relative_source, config)?;
-            register_template_file(&mut files, root_index, source_path, relative_output)?;
+            register_template_file(
+                &mut files,
+                root_index,
+                TemplateSource::Filesystem(source_path),
+                relative_output,
+            )?;
         }
-        return Ok(files
-            .into_iter()
-            .map(|(relative_output, (_, source_path))| (source_path, relative_output))
-            .collect());
+        return Ok(rendered_template_files(files));
     }
 
-    for (root_index, root) in template_roots.into_iter().enumerate() {
+    for (root_index, root) in template_roots.iter().enumerate() {
         if !root.is_dir() {
             return Err(format!("missing template directory: {}", root.display()));
         }
-        collect_template_files(config, &root, &root, root_index, &mut files)?;
+        collect_template_files(config, root, root, root_index, &mut files)?;
     }
-    Ok(files
+    Ok(rendered_template_files(files))
+}
+
+fn embedded_template_files(config: &InitConfig) -> Result<Vec<TemplateFile>, String> {
+    let mut files = RenderedTemplateFiles::new();
+    for (root_index, prefix) in embedded_template_prefixes(config).into_iter().enumerate() {
+        let mut matched = false;
+        for template in EMBEDDED_TEMPLATES
+            .iter()
+            .filter(|template| template.path.starts_with(&prefix))
+        {
+            matched = true;
+            let relative_source = &template.path[prefix.len()..];
+            let relative_output = render_string(relative_source, config);
+            register_template_file(
+                &mut files,
+                root_index,
+                TemplateSource::Embedded(template),
+                relative_output,
+            )?;
+        }
+        if !matched {
+            return Err(format!("missing embedded template directory: {prefix}"));
+        }
+    }
+    Ok(rendered_template_files(files))
+}
+
+fn rendered_template_files(files: RenderedTemplateFiles) -> Vec<TemplateFile> {
+    files
         .into_iter()
-        .map(|(relative_output, (_, source_path))| (source_path, relative_output))
-        .collect())
+        .map(|(relative_output, (_, source))| TemplateFile {
+            source,
+            relative_output,
+        })
+        .collect()
 }
 
 fn tracked_template_files(
@@ -538,7 +628,12 @@ fn collect_template_files(
             .strip_prefix(template_root)
             .map_err(|error| format!("failed to relativize {}: {error}", entry.display()))?;
         let relative_output = render_path(relative_source, config)?;
-        register_template_file(files, root_index, entry, relative_output)?;
+        register_template_file(
+            files,
+            root_index,
+            TemplateSource::Filesystem(entry),
+            relative_output,
+        )?;
     }
     Ok(())
 }
@@ -546,7 +641,7 @@ fn collect_template_files(
 fn register_template_file(
     files: &mut RenderedTemplateFiles,
     root_index: usize,
-    source_path: PathBuf,
+    source: TemplateSource,
     relative_output: String,
 ) -> Result<(), String> {
     if let Some((existing_root_index, _)) = files.get(&relative_output)
@@ -556,7 +651,7 @@ fn register_template_file(
             "duplicate rendered template path detected: {relative_output}"
         ));
     }
-    files.insert(relative_output, (root_index, source_path));
+    files.insert(relative_output, (root_index, source));
     Ok(())
 }
 
@@ -635,6 +730,21 @@ fn prepare_target_dir(config: &InitConfig) -> Result<(), String> {
     ))
 }
 
+fn preflight_init_environment(config: &InitConfig) -> Result<(), String> {
+    if !needs_git_command(config) {
+        return Ok(());
+    }
+    ensure_command_available(
+        "git",
+        &["--version"],
+        "git is required before writing files because the requested init/hooks flow would otherwise leave a partial scaffold behind",
+    )
+}
+
+fn needs_git_command(config: &InitConfig) -> bool {
+    config.setup_hooks || (config.git_init && !config.target_dir.join(".git").exists())
+}
+
 fn existing_target_entries(target_dir: &Path) -> Result<Vec<String>, String> {
     let mut existing: Vec<String> = read_dir_entries(target_dir)?
         .into_iter()
@@ -705,16 +815,13 @@ fn cleanup_existing_scaffold(config: &InitConfig) -> Result<(), String> {
 
 fn modified_managed_paths(target_dir: &Path, config: &InitConfig) -> Result<Vec<String>, String> {
     let mut modified = Vec::new();
-    for (source_path, relative_output) in template_files(config)? {
+    for template in template_files(config)? {
+        let relative_output = template.relative_output;
         let destination = target_dir.join(&relative_output);
         if !destination.exists() {
             continue;
         }
-        let expected = render_template_bytes(
-            fs::read(&source_path)
-                .map_err(|error| format!("failed to read {}: {error}", source_path.display()))?,
-            config,
-        );
+        let expected = render_template_bytes(template_source_bytes(&template.source)?, config);
         let actual = fs::read(&destination)
             .map_err(|error| format!("failed to read {}: {error}", destination.display()))?;
         if actual != expected {
@@ -865,21 +972,29 @@ fn directory_is_empty(path: &Path) -> Result<bool, String> {
 
 fn write_files(config: &InitConfig) -> Result<Vec<String>, String> {
     let mut written = Vec::new();
-    for (source_path, relative_output) in template_files(config)? {
-        let destination = config.target_dir.join(&relative_output);
+    for template in template_files(config)? {
+        let destination = config.target_dir.join(&template.relative_output);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
         }
-        let content = fs::read(&source_path)
-            .map_err(|error| format!("failed to read {}: {error}", source_path.display()))?;
+        let content = template_source_bytes(&template.source)?;
         let rendered = render_template_bytes(content, config);
         fs::write(&destination, rendered)
             .map_err(|error| format!("failed to write {}: {error}", destination.display()))?;
-        maybe_mark_executable(&destination, &relative_output)?;
-        written.push(relative_output);
+        maybe_mark_executable(&destination, &template.relative_output)?;
+        written.push(template.relative_output);
     }
     Ok(written)
+}
+
+fn template_source_bytes(source: &TemplateSource) -> Result<Vec<u8>, String> {
+    match source {
+        TemplateSource::Filesystem(path) => {
+            fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))
+        }
+        TemplateSource::Embedded(template) => Ok(template.contents.to_vec()),
+    }
 }
 
 fn render_template_bytes(content: Vec<u8>, config: &InitConfig) -> Vec<u8> {
@@ -968,6 +1083,28 @@ fn run_command(command: &mut Command) -> Result<(), String> {
         return Err(format!("command failed: {rendered}"));
     }
     Err(stderr.trim().to_string())
+}
+
+fn ensure_command_available(program: &str, args: &[&str], reason: &str) -> Result<(), String> {
+    match Command::new(program).args(args).output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                Err(format!(
+                    "failed to probe `{program}` before initialization: {reason}"
+                ))
+            } else {
+                Err(format!(
+                    "failed to probe `{program}` before initialization: {reason}\n\n{detail}"
+                ))
+            }
+        }
+        Err(error) => Err(format!(
+            "failed to execute `{program}` before initialization: {reason}\n\n{error}"
+        )),
+    }
 }
 
 fn print_json_array(values: &[String]) {
@@ -1088,7 +1225,10 @@ mod tests {
             panic!("expected merged README.md template");
         };
         assert_eq!(*root_index, 1);
-        assert_eq!(source_path, &project_root.join("README.md"));
+        match source_path {
+            TemplateSource::Filesystem(path) => assert_eq!(path, &project_root.join("README.md")),
+            TemplateSource::Embedded(_) => panic!("expected filesystem template source"),
+        }
     }
 
     #[test]
@@ -1129,6 +1269,98 @@ mod tests {
         let config = test_config(Path::new("."));
         let rendered = render_template_bytes(vec![0xff, 0xfe, 0xfd], &config);
         assert_eq!(rendered, vec![0xff, 0xfe, 0xfd]);
+    }
+
+    #[test]
+    fn embedded_template_catalog_covers_supported_projects() {
+        let sandbox = TempDir::new("embedded-templates");
+
+        let rust_manifest = embedded_template_files(&test_config(sandbox.path()))
+            .expect("embedded rust templates")
+            .into_iter()
+            .map(|file| file.relative_output)
+            .collect::<Vec<_>>();
+        assert!(rust_manifest.iter().any(|path| path == "Cargo.toml"));
+        assert!(
+            rust_manifest
+                .iter()
+                .any(|path| path == "crates/demo-repo/Cargo.toml")
+        );
+
+        let python_manifest = embedded_template_files(&InitConfig {
+            project_kind: ProjectKind::Python,
+            layout: Layout::Root,
+            ..test_config(sandbox.path())
+        })
+        .expect("embedded python templates")
+        .into_iter()
+        .map(|file| file.relative_output)
+        .collect::<Vec<_>>();
+        assert!(python_manifest.iter().any(|path| path == "pyproject.toml"));
+        assert!(
+            python_manifest
+                .iter()
+                .any(|path| path == "demo_repo/__init__.py")
+        );
+
+        let node_manifest = embedded_template_files(&InitConfig {
+            project_kind: ProjectKind::Nodejs,
+            layout: Layout::Root,
+            ..test_config(sandbox.path())
+        })
+        .expect("embedded node templates")
+        .into_iter()
+        .map(|file| file.relative_output)
+        .collect::<Vec<_>>();
+        assert!(node_manifest.iter().any(|path| path == "package.json"));
+        assert!(node_manifest.iter().any(|path| path == "src/index.js"));
+    }
+
+    #[test]
+    fn template_files_fall_back_to_embedded_templates_when_disk_templates_are_missing() {
+        let sandbox = TempDir::new("embedded-fallback");
+        let missing_roots = vec![
+            sandbox.path().join("templates").join("common"),
+            sandbox
+                .path()
+                .join("templates")
+                .join("projects")
+                .join("rust")
+                .join("crate"),
+        ];
+
+        let manifest = template_files_with_roots(&test_config(sandbox.path()), &missing_roots)
+            .expect("fallback to embedded templates")
+            .into_iter()
+            .map(|file| file.relative_output)
+            .collect::<Vec<_>>();
+        assert!(manifest.iter().any(|path| path == "README.md"));
+        assert!(
+            manifest
+                .iter()
+                .any(|path| path == "crates/demo-repo/Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn needs_git_command_only_when_git_work_is_requested() {
+        let sandbox = TempDir::new("git-preflight");
+        assert!(!needs_git_command(&test_config(sandbox.path())));
+
+        let git_init = InitConfig {
+            git_init: true,
+            ..test_config(sandbox.path())
+        };
+        assert!(needs_git_command(&git_init));
+
+        fs::create_dir_all(sandbox.path().join(".git")).expect("create .git");
+        assert!(!needs_git_command(&git_init));
+
+        let setup_hooks = InitConfig {
+            setup_hooks: true,
+            ..test_config(sandbox.path())
+        };
+        assert!(needs_git_command(&setup_hooks));
     }
 
     #[test]
