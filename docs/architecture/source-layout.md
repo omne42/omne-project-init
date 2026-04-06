@@ -20,8 +20,11 @@
 
 - `tests/cli_smoke.rs`
   - 初始化器与生成物 smoke 测试。
+- `tests/docs_system.rs`
+  - 文档入口和文档地图检查。
 
 ## 布局约束
 
 - 模板必须以真实文件形式保存在仓库中。
 - 新 project kind 优先新增模板目录和最小 Rust 接线，不引入新的模板语言层。
+- 治理骨架的稳定归位规则记录在 `docs/architecture/governance-scaffold.md`。
