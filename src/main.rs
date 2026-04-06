@@ -5,6 +5,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use toml::Value as TomlValue;
+
 const TEMPLATE_VERSION: &str = "0.1.0";
 const IGNORED_TEMPLATE_DIR_NAMES: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 
@@ -781,7 +783,8 @@ fn load_stored_scaffold_config(target_dir: &Path) -> Result<Option<StoredScaffol
 
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let values = parse_flat_config(&text)?;
+    let values = toml::from_str::<TomlValue>(&text)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
     let template_version = required_value(&values, "template_version")?;
     let repo_name = required_value(&values, "repo_name")?;
     let project_kind = ProjectKind::parse(&required_value(&values, "project_kind")?)?;
@@ -807,82 +810,12 @@ fn load_stored_scaffold_config(target_dir: &Path) -> Result<Option<StoredScaffol
     }))
 }
 
-fn parse_flat_config(text: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
-    let mut values = std::collections::BTreeMap::new();
-    for (line_number, raw_line) in text.lines().enumerate() {
-        let line = strip_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line.split_once('=').ok_or_else(|| {
-            format!(
-                "invalid config line {} in repo-check.toml: expected `key = \"value\"`",
-                line_number + 1
-            )
-        })?;
-        let key = key.trim();
-        let value = parse_quoted_value(value.trim()).ok_or_else(|| {
-            format!(
-                "invalid config value on line {} in repo-check.toml: expected quoted string",
-                line_number + 1
-            )
-        })?;
-        values.insert(key.to_string(), value);
-    }
-    Ok(values)
-}
-
-fn required_value(
-    values: &std::collections::BTreeMap<String, String>,
-    key: &str,
-) -> Result<String, String> {
+fn required_value(values: &TomlValue, key: &str) -> Result<String, String> {
     values
         .get(key)
-        .cloned()
+        .and_then(TomlValue::as_str)
+        .map(str::to_string)
         .ok_or_else(|| format!("missing `{key}` in repo-check.toml"))
-}
-
-fn strip_comment(line: &str) -> &str {
-    let mut in_string = false;
-    for (index, character) in line.char_indices() {
-        match character {
-            '"' => in_string = !in_string,
-            '#' if !in_string => return &line[..index],
-            _ => {}
-        }
-    }
-    line
-}
-
-fn parse_quoted_value(value: &str) -> Option<String> {
-    if !value.starts_with('"') || !value.ends_with('"') || value.len() < 2 {
-        return None;
-    }
-    let inner = &value[1..value.len() - 1];
-    let mut out = String::new();
-    let mut escaped = false;
-    for character in inner.chars() {
-        if escaped {
-            match character {
-                '\\' | '"' => out.push(character),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                _ => return None,
-            }
-            escaped = false;
-            continue;
-        }
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-        out.push(character);
-    }
-    if escaped {
-        return None;
-    }
-    Some(out)
 }
 
 fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
@@ -1173,6 +1106,37 @@ mod tests {
         let error = derive_default_package_name(ProjectKind::Rust, "123-demo")
             .expect_err("derived rust package should fail");
         assert!(error.contains("--package-name"));
+    }
+
+    #[test]
+    fn load_stored_scaffold_config_accepts_real_toml_with_tables() {
+        let sandbox = TempDir::new("stored-config-toml");
+        fs::write(
+            sandbox.path().join("repo-check.toml"),
+            concat!(
+                "template_version = \"0.1.0\"\n",
+                "repo_name = \"demo-repo\"\n",
+                "project_kind = \"rust\"\n",
+                "layout = \"crate\"\n",
+                "package_name = \"demo-repo\"\n",
+                "crate_dir = \"demo-repo\"\n",
+                "python_package = \"demo_repo\"\n",
+                "package_manifest_path = \"crates/demo-repo/Cargo.toml\"\n",
+                "changelog_path = \"crates/demo-repo/CHANGELOG.md\"\n",
+                "\n",
+                "[extra]\n",
+                "owner = \"foundation\"\n",
+            ),
+        )
+        .expect("write repo-check.toml");
+
+        let stored = load_stored_scaffold_config(sandbox.path())
+            .expect("load stored scaffold config")
+            .expect("stored scaffold config should exist");
+        assert_eq!(stored.template_version, TEMPLATE_VERSION);
+        assert_eq!(stored.config.repo_name, "demo-repo");
+        assert_eq!(stored.config.project_kind, ProjectKind::Rust);
+        assert_eq!(stored.config.layout, Layout::Crate);
     }
 
     #[cfg(unix)]
