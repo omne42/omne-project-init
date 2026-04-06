@@ -470,7 +470,7 @@ fn template_files_with_roots(
     template_roots: &[PathBuf],
 ) -> Result<Vec<TemplateFile>, String> {
     if template_roots.iter().all(|root| root.is_dir()) {
-        return template_files_from_filesystem(config, &template_roots);
+        return template_files_from_filesystem(config, template_roots);
     }
     embedded_template_files(config)
 }
@@ -480,7 +480,7 @@ fn template_files_from_filesystem(
     template_roots: &[PathBuf],
 ) -> Result<Vec<TemplateFile>, String> {
     let mut files = RenderedTemplateFiles::new();
-    if let Some(tracked_files) = tracked_template_files(&template_roots)? {
+    if let Some(tracked_files) = tracked_template_files(template_roots)? {
         for (root_index, template_root, source_path) in tracked_files {
             let relative_source = source_path.strip_prefix(&template_root).map_err(|error| {
                 format!("failed to relativize {}: {error}", source_path.display())
