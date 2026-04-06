@@ -26,5 +26,6 @@
 ## 布局约束
 
 - 模板必须以真实文件形式保存在仓库中。
+- `templates/projects/<kind>/...` 与 `templates/common/...` 命中同一路径时，项目模板覆盖公共模板。
 - 新 project kind 优先新增模板目录和最小 Rust 接线，不引入新的模板语言层。
 - 治理骨架的稳定归位规则记录在 `docs/architecture/governance-scaffold.md`。
