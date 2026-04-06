@@ -289,6 +289,24 @@ fn generated_rust_repo_check_git_flow_passes() {
 }
 
 #[test]
+fn generated_hook_scripts_recognize_windows_absolute_manifest_override_paths() {
+    if !command_works("sh", &["-c", "exit 0"]) {
+        eprintln!("skipping hook manifest override test: `sh` not found");
+        return;
+    }
+
+    let repo = init_repo("hook-manifest-override", &["--project", "nodejs"]);
+    assert_hook_manifest_classifier(
+        &repo.path().join("githooks/pre-commit"),
+        "pre-commit hook manifest classifier",
+    );
+    assert_hook_manifest_classifier(
+        &repo.path().join("githooks/commit-msg"),
+        "commit-msg hook manifest classifier",
+    );
+}
+
+#[test]
 fn rust_package_names_reject_numeric_defaults_and_flags() {
     let sandbox = TempDir::new("numeric-rust-names");
 
@@ -880,6 +898,37 @@ fn generated_node_repo_check_uses_top_level_prerelease_version() {
     );
 }
 
+#[test]
+fn generated_node_repo_check_detects_major_bump_in_minified_package_json() {
+    let repo = init_repo("node-minified-major", &["--project", "nodejs"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"name\":\"node-minified-major\",\"publishConfig\":{\"version\":\"9.9.9\"},\"version\":\"1.0.0-beta.1\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write baseline package.json");
+    git_commit_all(repo.path(), "chore(repo): prepare node minified baseline");
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"name\":\"node-minified-major\",\"publishConfig\":{\"version\":\"1.0.0-beta.1\"},\"version\":\"2.0.0-beta.1\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write updated package.json");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected minified node major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "minified node prerelease version was rejected:\n{output}"
+    );
+}
+
 fn init_repo(prefix: &str, args: &[&str]) -> TempDir {
     let repo = TempDir::new(prefix);
     let mut cli_args = vec![
@@ -1153,6 +1202,41 @@ fn copy_dir_all(source: &Path, destination: &Path) {
             });
         }
     }
+}
+
+fn assert_hook_manifest_classifier(hook_path: &Path, label: &str) {
+    let hook_text = fs::read_to_string(hook_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", hook_path.display()));
+    let function = extract_shell_function(&hook_text, "is_absolute_manifest_path");
+    let script = format!(
+        "{function}\n\
+         check_true() {{ is_absolute_manifest_path \"$1\" || exit 10; }}\n\
+         check_false() {{ if is_absolute_manifest_path \"$1\"; then exit 11; fi; }}\n\
+         check_true 'C:/repo/tools/repo-check/Cargo.toml'\n\
+         check_true 'C:\\repo\\tools\\repo-check\\Cargo.toml'\n\
+         check_true '//server/share/repo-check/Cargo.toml'\n\
+         check_true '\\\\server\\share\\repo-check\\Cargo.toml'\n\
+         check_false 'tools/repo-check/Cargo.toml'\n"
+    );
+    run_ok(label, Command::new("sh").arg("-ceu").arg(script));
+}
+
+fn extract_shell_function(script: &str, function_name: &str) -> String {
+    let start = format!("{function_name}() {{");
+    let mut lines = Vec::new();
+    let mut capturing = false;
+    for line in script.lines() {
+        if !capturing && line == start {
+            capturing = true;
+        }
+        if capturing {
+            lines.push(line);
+            if line == "}" {
+                return format!("{}\n", lines.join("\n"));
+            }
+        }
+    }
+    panic!("failed to find shell function `{function_name}`");
 }
 
 fn assert_manifest_contains(output: &str, expected_entries: &[&str]) {
