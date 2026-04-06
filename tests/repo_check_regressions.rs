@@ -39,6 +39,42 @@ fn workspace_local_rejects_rust_clippy_warnings() {
 }
 
 #[test]
+fn documented_workspace_local_does_not_dirty_rust_repos() {
+    for layout in ["root", "crate"] {
+        let repo = init_repo(
+            &format!("rust-workspace-clean-{layout}"),
+            &["--project", "rust", "--layout", layout],
+        );
+        git_init(repo.path());
+        commit_all(repo.path(), "feat(repo): initial scaffold");
+
+        let cargo_lock = repo.path().join("Cargo.lock");
+        assert!(
+            cargo_lock.is_file(),
+            "expected generated Cargo.lock for {layout}"
+        );
+        let original_lock = fs::read_to_string(&cargo_lock).expect("read Cargo.lock");
+
+        run_documented_repo_check_command(repo.path(), &["workspace", "local"]);
+
+        assert!(
+            cargo_lock.is_file(),
+            "workspace local removed Cargo.lock for {layout}"
+        );
+        assert_eq!(
+            fs::read_to_string(&cargo_lock).expect("read Cargo.lock after workspace local"),
+            original_lock,
+            "workspace local rewrote Cargo.lock for {layout}"
+        );
+        assert_eq!(
+            git_status_short(repo.path()).trim(),
+            "",
+            "workspace local dirtied the repo for {layout}"
+        );
+    }
+}
+
+#[test]
 fn pre_commit_rejects_rust_clippy_warnings() {
     let repo = init_repo(
         "rust-pre-commit-clippy",
@@ -838,6 +874,24 @@ fn generated_repo_check_command(repo_root: &Path, args: &[&str], add_repo_root: 
     command
 }
 
+fn run_documented_repo_check_command(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .expect("generated repo-check lock poisoned");
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(repo_root.join("tools/repo-check/Cargo.toml"))
+        .arg("--");
+    for arg in args {
+        command.arg(arg);
+    }
+    command.arg("--repo-root").arg(repo_root);
+    run_ok("documented repo-check", &mut command)
+}
+
 fn generated_repo_check_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -938,6 +992,12 @@ fn run_fail(label: &str, command: &mut Command) -> String {
     } else {
         stderr
     }
+}
+
+fn git_status_short(repo_root: &Path) -> String {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo_root).args(["status", "--short"]);
+    run_ok("git status --short", &mut command)
 }
 
 fn command_works(program: &str, args: &[&str]) -> bool {
