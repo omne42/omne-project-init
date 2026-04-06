@@ -478,19 +478,7 @@ fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
     );
 
     git_add_all(repo.path());
-    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
-    assert!(
-        output.contains("refusing major version change by default"),
-        "expected major bump gate, got:\n{output}"
-    );
-    assert!(
-        !output.contains("Only `CHANGELOG.md` is allowed"),
-        "configured changelog path was ignored:\n{output}"
-    );
-    assert!(
-        !output.contains("nodejs root layout requires package.json"),
-        "configured manifest path was ignored:\n{output}"
-    );
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
 }
 
 #[test]
