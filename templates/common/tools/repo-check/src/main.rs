@@ -715,15 +715,21 @@ fn package_dir_from_changelog_path(config: &RepoConfig, path: &str) -> Option<St
 }
 
 fn is_package_changelog_path(path: &str, layout_paths: &CrateLayoutPaths) -> bool {
-    let path = Path::new(path);
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value == layout_paths.changelog_name)
-        && path
-            .strip_prefix(&layout_paths.container_dir)
-            .ok()
-            .and_then(|relative| relative.components().next())
-            .is_some()
+    let Ok(relative) = Path::new(path).strip_prefix(&layout_paths.container_dir) else {
+        return false;
+    };
+    let mut parts = relative.components();
+    let Some(crate_dir) = parts.next() else {
+        return false;
+    };
+    let Some(changelog_name) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    matches!(crate_dir, std::path::Component::Normal(_))
+        && changelog_name.as_os_str() == std::ffi::OsStr::new(&layout_paths.changelog_name)
 }
 
 fn active_crate_dir_for_path(repo_root: &Path, config: &RepoConfig, path: &str) -> Option<String> {
