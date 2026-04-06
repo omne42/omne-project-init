@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/index.js",
+    "check": "node --check __PRIMARY_SOURCE_PATH__",
     "test": "node --test"
   }
 }
-

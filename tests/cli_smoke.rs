@@ -237,6 +237,33 @@ fn generated_node_repo_check_workspace_local_passes_when_node_is_available() {
 }
 
 #[test]
+fn generated_node_repo_check_uses_configured_primary_source_path() {
+    if !command_works("node", &["--version"]) {
+        eprintln!("skipping node primary source path test: `node` not found");
+        return;
+    }
+
+    let repo = init_repo("node-primary-source", &["--project", "nodejs"]);
+    fs::rename(
+        repo.path().join("src/index.js"),
+        repo.path().join("src/app.js"),
+    )
+    .expect("failed to rename node entrypoint");
+    replace_in_file(
+        &repo.path().join("test/basic.test.js"),
+        "../src/index.js",
+        "../src/app.js",
+    );
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        "primary_source_path = \"src/index.js\"",
+        "primary_source_path = \"src/app.js\"",
+    );
+
+    run_generated_repo_check(repo.path(), &["workspace", "local"]);
+}
+
+#[test]
 fn generated_rust_repo_check_git_flow_passes() {
     if !command_works("git", &["--version"]) {
         eprintln!("skipping git flow smoke test: `git` not found");
