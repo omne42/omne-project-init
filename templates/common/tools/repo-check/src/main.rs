@@ -26,7 +26,7 @@ const ALLOWED_BRANCH_PREFIXES: &[&str] = &[
 const ALLOWED_COMMIT_TYPES: &[&str] = &[
     "feat", "fix", "docs", "refactor", "perf", "test", "chore", "build", "ci", "revert",
 ];
-const REPO_CHECK_SCHEMA_VERSION: &str = "1";
+const REPO_CHECK_SCHEMA_VERSION: &str = "__REPO_CHECK_SCHEMA_VERSION__";
 const WORKTREE_SNAPSHOT_IGNORED_DIRS: &[&str] = &[
     ".git",
     "target",

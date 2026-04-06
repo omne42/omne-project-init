@@ -80,6 +80,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let crate_repo_check = fs::read_to_string(rust_crate.path().join("repo-check.toml"))
         .expect("failed to read crate repo-check.toml");
+    assert!(crate_repo_check.contains("schema_version = \"1\""));
     assert!(crate_repo_check.contains("layout = \"crate\""));
     assert!(crate_repo_check.contains(&format!(
         "package_manifest_path = \"crates/{rust_crate_slug}/Cargo.toml\""
@@ -117,6 +118,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let root_repo_check = fs::read_to_string(rust_root.path().join("repo-check.toml"))
         .expect("failed to read root repo-check.toml");
+    assert!(root_repo_check.contains("schema_version = \"1\""));
     assert!(root_repo_check.contains("layout = \"root\""));
     assert!(root_repo_check.contains("package_manifest_path = \"Cargo.toml\""));
     assert!(root_repo_check.contains("changelog_path = \"CHANGELOG.md\""));
