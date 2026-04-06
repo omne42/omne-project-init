@@ -363,6 +363,42 @@ fn hook_templates_recognize_windows_absolute_manifest_paths() {
 }
 
 #[test]
+fn workspace_local_resolves_repo_root_from_crate_subdir_without_git() {
+    let repo = init_repo(
+        "subdir-workspace-local-no-git",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    let crate_dir = repo_slug(repo.path());
+    let current_dir = repo.path().join(format!("crates/{crate_dir}"));
+
+    let output =
+        run_generated_repo_check_from_dir(&current_dir, repo.path(), &["workspace", "local"]);
+    assert!(
+        output.contains("running Local checks"),
+        "expected workspace local to resolve the repo root without git metadata, got: {output}"
+    );
+}
+
+#[test]
+fn repo_check_config_accepts_single_quoted_toml_strings() {
+    let repo = init_repo("single-quoted-config", &["--project", "nodejs"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let config_path = repo.path().join("repo-check.toml");
+    let config_text = fs::read_to_string(&config_path).expect("read repo-check.toml");
+    fs::write(&config_path, config_text.replace('"', "'")).expect("write repo-check.toml");
+
+    append_to_file(
+        &repo.path().join("CHANGELOG.md"),
+        "- keep single-quoted repo-check config covered\n",
+    );
+    git_add(repo.path(), &["repo-check.toml", "CHANGELOG.md"]);
+
+    run_generated_repo_check(repo.path(), &["pre-commit"]);
+}
+
+#[test]
 fn workspace_local_accepts_running_from_a_subdirectory_without_repo_root_override() {
     let repo = init_repo(
         "subdir-workspace-local",
