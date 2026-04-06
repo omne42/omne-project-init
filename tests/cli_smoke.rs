@@ -526,6 +526,35 @@ fn force_reinit_reports_modified_repo_check_toml_when_config_uses_tables() {
 }
 
 #[test]
+fn init_refuses_missing_git_before_writing_any_files() {
+    let repo = TempDir::new("missing-git-preflight");
+    let mut command = Command::new(cli_binary());
+    command.args([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+    ]);
+    command.env("PATH", "");
+    command.env("Path", "");
+
+    let output = run_fail("omne-project-init", &mut command);
+    assert!(
+        output.contains("before initialization"),
+        "expected git preflight failure, got:\n{output}"
+    );
+    assert!(
+        fs::read_dir(repo.path())
+            .expect("read target dir after failed init")
+            .next()
+            .is_none(),
+        "failed init left generated files behind"
+    );
+}
+
+#[test]
 fn generated_agents_use_validation_commands_instead_of_fake_test_paths() {
     let rust_root = init_repo(
         "rust-root-agents",
