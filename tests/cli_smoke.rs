@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -826,7 +827,7 @@ fn run_generated_repo_check(repo_root: &Path, args: &[&str]) -> String {
         .arg("run")
         .arg("--quiet")
         .arg("--target-dir")
-        .arg(shared_generated_target_dir())
+        .arg(generated_target_dir(repo_root))
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--");
@@ -852,7 +853,7 @@ fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
         .arg("run")
         .arg("--quiet")
         .arg("--target-dir")
-        .arg(shared_generated_target_dir())
+        .arg(generated_target_dir(repo_root))
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--");
@@ -1107,13 +1108,24 @@ fn repo_slug(repo_root: &Path) -> &str {
         .expect("temp repo path must end with a UTF-8 file name")
 }
 
-fn shared_generated_target_dir() -> &'static Path {
-    static TARGET_DIR: OnceLock<PathBuf> = OnceLock::new();
-    TARGET_DIR.get_or_init(|| {
+fn generated_target_dir(repo_root: &Path) -> PathBuf {
+    static TARGET_ROOT: OnceLock<PathBuf> = OnceLock::new();
+    let root = TARGET_ROOT.get_or_init(|| {
         let path = env::temp_dir().join("omne-project-init-generated-target");
-        fs::create_dir_all(&path).expect("failed to create shared generated target dir");
+        fs::create_dir_all(&path).expect("failed to create generated target root");
         path
-    })
+    });
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    repo_root.hash(&mut hasher);
+    let path = root.join(format!("{}-{:016x}", repo_slug(repo_root), hasher.finish()));
+    fs::create_dir_all(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to create generated target dir {}: {error}",
+            path.display()
+        )
+    });
+    path
 }
 
 fn repo_template_root() -> PathBuf {
