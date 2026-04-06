@@ -19,6 +19,47 @@ fn root_layout_docs_only_change_does_not_require_changelog() {
 }
 
 #[test]
+fn workspace_local_rejects_rust_clippy_warnings() {
+    let repo = init_repo("rust-workspace-local-clippy", &["--project", "rust", "--layout", "root"]);
+
+    inject_unused_variable_warning(repo.path());
+
+    let error = run_generated_repo_check_fail(repo.path(), &["workspace", "local"]);
+    assert!(
+        error.contains("rust clippy"),
+        "expected workspace local to run clippy, got: {error}"
+    );
+    assert!(
+        error.contains("unused variable"),
+        "expected clippy warning details, got: {error}"
+    );
+}
+
+#[test]
+fn pre_commit_rejects_rust_clippy_warnings() {
+    let repo = init_repo("rust-pre-commit-clippy", &["--project", "rust", "--layout", "root"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    inject_unused_variable_warning(repo.path());
+    append_to_file(
+        &repo.path().join("CHANGELOG.md"),
+        "- keep rust clippy gate aligned with pre-commit\n",
+    );
+    git_add(repo.path(), &["src/main.rs", "CHANGELOG.md"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("rust clippy"),
+        "expected pre-commit to run clippy, got: {error}"
+    );
+    assert!(
+        error.contains("unused variable"),
+        "expected clippy warning details, got: {error}"
+    );
+}
+
+#[test]
 fn pre_commit_checks_staged_snapshot() {
     if !command_works("node", &["--version"]) {
         eprintln!("skipping staged snapshot regression: node not found");
@@ -607,6 +648,14 @@ fn append_to_file(path: &Path, suffix: &str) {
     let mut text = fs::read_to_string(path).expect("read file for append");
     text.push_str(suffix);
     fs::write(path, text).expect("write appended file");
+}
+
+fn inject_unused_variable_warning(repo_root: &Path) {
+    replace_in_file(
+        repo_root.join("src/main.rs"),
+        "fn main() {\n    println!(\"",
+        "fn main() {\n    let unused = 1;\n    println!(\"",
+    );
 }
 
 fn add_workspace_crate(repo_root: &Path, crate_name: &str) {
