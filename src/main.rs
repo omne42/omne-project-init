@@ -10,6 +10,10 @@ use toml::Value as TomlValue;
 const TEMPLATE_VERSION: &str = "0.1.0";
 const IGNORED_TEMPLATE_DIR_NAMES: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 
+type TemplateFile = (PathBuf, String);
+type RenderedTemplateFiles = std::collections::BTreeMap<String, (usize, PathBuf)>;
+type TrackedTemplateFile = (usize, PathBuf, PathBuf);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectKind {
     Rust,
@@ -411,45 +415,45 @@ fn output_manifest(config: &InitConfig) -> Result<Vec<String>, String> {
     Ok(manifest)
 }
 
-fn template_files(config: &InitConfig) -> Result<Vec<(PathBuf, String)>, String> {
-    let mut files = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+fn template_files(config: &InitConfig) -> Result<Vec<TemplateFile>, String> {
+    let mut files = RenderedTemplateFiles::new();
     let template_roots = template_roots(config);
     if let Some(tracked_files) = tracked_template_files(&template_roots)? {
-        for (template_root, source_path) in tracked_files {
+        for (root_index, template_root, source_path) in tracked_files {
             let relative_source = source_path.strip_prefix(&template_root).map_err(|error| {
                 format!("failed to relativize {}: {error}", source_path.display())
             })?;
             let relative_output = render_path(relative_source, config)?;
-            if !seen.insert(relative_output.clone()) {
-                return Err(format!(
-                    "duplicate rendered template path detected: {relative_output}"
-                ));
-            }
-            files.push((source_path, relative_output));
+            register_template_file(&mut files, root_index, source_path, relative_output)?;
         }
-        return Ok(files);
+        return Ok(files
+            .into_iter()
+            .map(|(relative_output, (_, source_path))| (source_path, relative_output))
+            .collect());
     }
 
-    for root in template_roots {
+    for (root_index, root) in template_roots.into_iter().enumerate() {
         if !root.is_dir() {
             return Err(format!("missing template directory: {}", root.display()));
         }
-        collect_template_files(config, &root, &root, &mut files, &mut seen)?;
+        collect_template_files(config, &root, &root, root_index, &mut files)?;
     }
-    Ok(files)
+    Ok(files
+        .into_iter()
+        .map(|(relative_output, (_, source_path))| (source_path, relative_output))
+        .collect())
 }
 
 fn tracked_template_files(
     template_roots: &[PathBuf],
-) -> Result<Option<Vec<(PathBuf, PathBuf)>>, String> {
+) -> Result<Option<Vec<TrackedTemplateFile>>, String> {
     let repo_root = repo_root();
     if !repo_root.join(".git").exists() {
         return Ok(None);
     }
 
     let mut files = Vec::new();
-    for template_root in template_roots {
+    for (root_index, template_root) in template_roots.iter().enumerate() {
         let repo_relative = template_root.strip_prefix(&repo_root).map_err(|error| {
             format!("failed to relativize {}: {error}", template_root.display())
         })?;
@@ -461,7 +465,7 @@ fn tracked_template_files(
             if !source_path.starts_with(template_root) {
                 continue;
             }
-            files.push((template_root.clone(), source_path));
+            files.push((root_index, template_root.clone(), source_path));
         }
     }
     Ok(Some(files))
@@ -510,8 +514,8 @@ fn collect_template_files(
     config: &InitConfig,
     template_root: &Path,
     current: &Path,
-    files: &mut Vec<(PathBuf, String)>,
-    seen: &mut std::collections::BTreeSet<String>,
+    root_index: usize,
+    files: &mut RenderedTemplateFiles,
 ) -> Result<(), String> {
     let mut entries = read_dir_entry_paths(current)?;
     entries.sort();
@@ -521,20 +525,32 @@ fn collect_template_files(
             if should_skip_template_dir(&entry) {
                 continue;
             }
-            collect_template_files(config, template_root, &entry, files, seen)?;
+            collect_template_files(config, template_root, &entry, root_index, files)?;
             continue;
         }
         let relative_source = entry
             .strip_prefix(template_root)
             .map_err(|error| format!("failed to relativize {}: {error}", entry.display()))?;
         let relative_output = render_path(relative_source, config)?;
-        if !seen.insert(relative_output.clone()) {
-            return Err(format!(
-                "duplicate rendered template path detected: {relative_output}"
-            ));
-        }
-        files.push((entry, relative_output));
+        register_template_file(files, root_index, entry, relative_output)?;
     }
+    Ok(())
+}
+
+fn register_template_file(
+    files: &mut RenderedTemplateFiles,
+    root_index: usize,
+    source_path: PathBuf,
+    relative_output: String,
+) -> Result<(), String> {
+    if let Some((existing_root_index, _)) = files.get(&relative_output)
+        && *existing_root_index == root_index
+    {
+        return Err(format!(
+            "duplicate rendered template path detected: {relative_output}"
+        ));
+    }
+    files.insert(relative_output, (root_index, source_path));
     Ok(())
 }
 
@@ -1027,19 +1043,36 @@ mod tests {
         .expect("write ignored binary artifact");
 
         let config = test_config(sandbox.path());
-        let mut files = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        collect_template_files(
-            &config,
-            &template_root,
-            &template_root,
-            &mut files,
-            &mut seen,
-        )
-        .expect("collect template files");
+        let mut files = std::collections::BTreeMap::new();
+        collect_template_files(&config, &template_root, &template_root, 0, &mut files)
+            .expect("collect template files");
 
-        let rendered_paths: Vec<String> = files.into_iter().map(|(_, relative)| relative).collect();
+        let rendered_paths: Vec<String> = files.into_keys().collect();
         assert_eq!(rendered_paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn later_template_roots_override_common_templates() {
+        let sandbox = TempDir::new("template-override");
+        let common_root = sandbox.path().join("templates").join("common");
+        let project_root = sandbox.path().join("templates").join("project");
+        fs::create_dir_all(&common_root).expect("create common root");
+        fs::create_dir_all(&project_root).expect("create project root");
+        fs::write(common_root.join("README.md"), "common\n").expect("write common README");
+        fs::write(project_root.join("README.md"), "project\n").expect("write project README");
+
+        let config = test_config(sandbox.path());
+        let mut files = std::collections::BTreeMap::new();
+        collect_template_files(&config, &common_root, &common_root, 0, &mut files)
+            .expect("collect common templates");
+        collect_template_files(&config, &project_root, &project_root, 1, &mut files)
+            .expect("collect project templates");
+
+        let Some((root_index, source_path)) = files.get("README.md") else {
+            panic!("expected merged README.md template");
+        };
+        assert_eq!(*root_index, 1);
+        assert_eq!(source_path, &project_root.join("README.md"));
     }
 
     #[test]

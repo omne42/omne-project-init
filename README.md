@@ -51,7 +51,7 @@
 - `templates/projects/python/`
 - `templates/projects/nodejs/`
 
-CLI 会读取这些模板文件，替换占位符后写入目标仓库。Rust 相关模板统一使用 `edition = "2024"`。
+CLI 会读取这些模板文件，替换占位符后写入目标仓库；如果项目模板与 `templates/common/` 渲染到同一路径，项目模板优先覆盖公共模板。Rust 相关模板统一使用 `edition = "2024"`。
 
 ## 生成结果
 
