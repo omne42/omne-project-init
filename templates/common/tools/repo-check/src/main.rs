@@ -466,12 +466,15 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
         return Err("repo-check: crate layout is only supported for rust projects".to_string());
     }
 
-    validate_required_configured_file(
+    let package_manifest = validate_required_configured_file(
         repo_root,
         &config.package_manifest_path,
         "package_manifest_path",
     )?;
-    validate_required_configured_file(repo_root, &config.changelog_path, "changelog_path")?;
+    let changelog =
+        validate_required_configured_file(repo_root, &config.changelog_path, "changelog_path")?;
+    validate_package_manifest_shape(&package_manifest, config)?;
+    validate_changelog_shape(&changelog, &config.changelog_path)?;
 
     match (config.project_kind, config.layout) {
         (ProjectKind::Rust, Layout::Root) => {
@@ -529,6 +532,115 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
     }
 
     Ok(())
+}
+
+fn validate_package_manifest_shape(
+    package_manifest: &Path,
+    config: &RepoConfig,
+) -> Result<(), String> {
+    let text = fs::read_to_string(package_manifest).map_err(|error| {
+        format!(
+            "repo-check: failed to read {}: {error}",
+            package_manifest.display()
+        )
+    })?;
+    match config.project_kind {
+        ProjectKind::Rust => {
+            validate_rust_package_manifest_shape(&text, &config.package_manifest_path)
+        }
+        ProjectKind::Python => {
+            validate_python_package_manifest_shape(&text, &config.package_manifest_path)
+        }
+        ProjectKind::Nodejs => {
+            validate_node_package_manifest_shape(&text, &config.package_manifest_path)
+        }
+    }
+}
+
+fn validate_rust_package_manifest_shape(text: &str, manifest_path: &str) -> Result<(), String> {
+    let parsed = cargo_toml(Some(text)).ok_or_else(|| {
+        format!(
+            "repo-check: configured package_manifest_path must point to a valid Cargo manifest: {manifest_path}"
+        )
+    })?;
+    let Some(package) = parsed.get("package").and_then(TomlValue::as_table) else {
+        return Err(format!(
+            "repo-check: configured package_manifest_path must point to a Cargo package manifest with `package.name` and version fields: {manifest_path}"
+        ));
+    };
+    let has_name = package.get("name").and_then(TomlValue::as_str).is_some();
+    let has_version = match package.get("version") {
+        Some(version) if version.as_str().is_some() => true,
+        Some(version) => {
+            version
+                .as_table()
+                .and_then(|table| table.get("workspace"))
+                .and_then(TomlValue::as_bool)
+                == Some(true)
+        }
+        None => false,
+    };
+    if has_name && has_version {
+        return Ok(());
+    }
+    Err(format!(
+        "repo-check: configured package_manifest_path must point to a Cargo package manifest with `package.name` and version fields: {manifest_path}"
+    ))
+}
+
+fn validate_python_package_manifest_shape(text: &str, manifest_path: &str) -> Result<(), String> {
+    let parsed = cargo_toml(Some(text)).ok_or_else(|| {
+        format!(
+            "repo-check: configured package_manifest_path must point to a valid pyproject.toml: {manifest_path}"
+        )
+    })?;
+    let Some(project) = parsed.get("project").and_then(TomlValue::as_table) else {
+        return Err(format!(
+            "repo-check: configured package_manifest_path must point to a pyproject.toml with string `project.name` and `project.version`: {manifest_path}"
+        ));
+    };
+    if project.get("name").and_then(TomlValue::as_str).is_some()
+        && project.get("version").and_then(TomlValue::as_str).is_some()
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "repo-check: configured package_manifest_path must point to a pyproject.toml with string `project.name` and `project.version`: {manifest_path}"
+    ))
+}
+
+fn validate_node_package_manifest_shape(text: &str, manifest_path: &str) -> Result<(), String> {
+    let parsed = serde_json::from_str::<JsonValue>(text).map_err(|error| {
+        format!(
+            "repo-check: configured package_manifest_path must point to a valid package.json: {manifest_path} ({error})"
+        )
+    })?;
+    let has_name = parsed.get("name").and_then(JsonValue::as_str).is_some();
+    let has_version = parsed.get("version").and_then(JsonValue::as_str).is_some();
+    if has_name && has_version {
+        return Ok(());
+    }
+    Err(format!(
+        "repo-check: configured package_manifest_path must point to a package.json with top-level string `name` and `version` fields: {manifest_path}"
+    ))
+}
+
+fn validate_changelog_shape(changelog: &Path, changelog_path: &str) -> Result<(), String> {
+    let text = fs::read_to_string(changelog).map_err(|error| {
+        format!(
+            "repo-check: failed to read {}: {error}",
+            changelog.display()
+        )
+    })?;
+    if text
+        .lines()
+        .any(|line| line.trim_end_matches('\r') == "## [Unreleased]")
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "repo-check: configured changelog_path must contain a `## [Unreleased]` section: {changelog_path}"
+    ))
 }
 
 fn validate_required_configured_file(
@@ -1221,12 +1333,10 @@ fn validate_released_sections_immutable(
             continue;
         }
 
-        return Err(
-            format!(
-                "repo-check: refusing to modify released CHANGELOG sections.\n\nOnly edit entries under [Unreleased].\nIf you are intentionally cutting a release, re-run with:\n{}",
-                override_instructions("OMNE_ALLOW_CHANGELOG_RELEASE_EDIT", "git commit ...")
-            ),
-        );
+        return Err(format!(
+            "repo-check: refusing to modify released CHANGELOG sections.\n\nOnly edit entries under [Unreleased].\nIf you are intentionally cutting a release, re-run with:\n{}",
+            override_instructions("OMNE_ALLOW_CHANGELOG_RELEASE_EDIT", "git commit ...")
+        ));
     }
 
     Ok(())
@@ -1436,10 +1546,16 @@ fn parse_version_major(version: Option<&str>) -> Result<Option<u64>, String> {
     let Some(version) = version else {
         return Ok(None);
     };
+    let version = version.trim();
     let release = version
         .rsplit_once('!')
         .map(|(_, release)| release)
-        .unwrap_or(version);
+        .unwrap_or(version)
+        .trim();
+    let release = release
+        .strip_prefix('v')
+        .or_else(|| release.strip_prefix('V'))
+        .unwrap_or(release);
     let digits: String = release
         .chars()
         .take_while(|character| character.is_ascii_digit())
@@ -2839,6 +2955,87 @@ mod tests {
         assert!(
             python_requirement_meets_template_floor(">3.11").expect("evaluate stricter floor"),
             "a stricter floor above 3.11 should still satisfy the template floor"
+        );
+    }
+
+    #[test]
+    fn parse_version_major_accepts_prerelease_build_metadata_and_pep440_forms() {
+        assert_eq!(
+            parse_version_major(Some("1.2.3-alpha.1+build.5")).expect("parse semver prerelease"),
+            Some(1)
+        );
+        assert_eq!(
+            parse_version_major(Some("v2.0.0-beta.1")).expect("parse leading-v version"),
+            Some(2)
+        );
+        assert_eq!(
+            parse_version_major(Some("1!3.0.0rc1+local")).expect("parse pep440 epoch/local"),
+            Some(3)
+        );
+        assert_eq!(
+            parse_version_major(Some(" 4.1.0.post2 ")).expect("parse padded pep440 version"),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn validate_package_manifest_shape_requires_real_manifest_fields() {
+        let repo = TempDir::new("manifest-shape");
+        let fake_node_manifest = repo.path().join("package.json");
+        fs::write(&fake_node_manifest, "{\"name\":\"shape-node\"}\n")
+            .expect("write fake node manifest");
+        let fake_rust_manifest = repo.path().join("Cargo.toml");
+        fs::write(
+            &fake_rust_manifest,
+            "[package]\nname = \"shape-rust\"\nedition = \"2024\"\n",
+        )
+        .expect("write fake rust manifest");
+
+        let node_config = RepoConfig {
+            template_version: "1".to_string(),
+            schema_version: REPO_CHECK_SCHEMA_VERSION.to_string(),
+            repo_name: "shape-node".to_string(),
+            project_kind: ProjectKind::Nodejs,
+            layout: Layout::Root,
+            package_name: "shape-node".to_string(),
+            crate_dir: "shape-node".to_string(),
+            python_package: "shape_node".to_string(),
+            package_manifest_path: "package.json".to_string(),
+            changelog_path: "CHANGELOG.md".to_string(),
+            primary_source_path: "src/index.js".to_string(),
+        };
+        let node_error = validate_package_manifest_shape(&fake_node_manifest, &node_config)
+            .expect_err("invalid node manifest should fail");
+        assert!(
+            node_error.contains("package.json with top-level string `name` and `version` fields"),
+            "unexpected node manifest error: {node_error}"
+        );
+
+        let rust_config = RepoConfig {
+            project_kind: ProjectKind::Rust,
+            package_manifest_path: "Cargo.toml".to_string(),
+            ..node_config.clone()
+        };
+        let rust_error = validate_package_manifest_shape(&fake_rust_manifest, &rust_config)
+            .expect_err("invalid rust manifest should fail");
+        assert!(
+            rust_error.contains("Cargo package manifest with `package.name` and version fields"),
+            "unexpected rust manifest error: {rust_error}"
+        );
+    }
+
+    #[test]
+    fn validate_changelog_shape_requires_unreleased_section() {
+        let repo = TempDir::new("changelog-shape");
+        let changelog = repo.path().join("CHANGELOG.md");
+        fs::write(&changelog, "# Changelog\n\n## [0.1.0] - 2026-01-01\n")
+            .expect("write fake changelog");
+
+        let error = validate_changelog_shape(&changelog, "CHANGELOG.md")
+            .expect_err("missing unreleased heading should fail");
+        assert!(
+            error.contains("must contain a `## [Unreleased]` section"),
+            "unexpected changelog error: {error}"
         );
     }
 

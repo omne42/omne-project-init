@@ -136,6 +136,8 @@ fn init_writes_expected_metadata_for_rust_layouts() {
             .expect("failed to read generated repo-check Cargo.toml");
     assert!(repo_check_manifest.contains("edition = \"2024\""));
     assert!(repo_check_manifest.contains("[workspace]"));
+    assert!(repo_check_manifest.contains("members = [\".\"]"));
+    assert!(repo_check_manifest.contains("resolver = \"3\""));
     assert!(
         rust_root
             .path()
@@ -819,6 +821,54 @@ fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
 }
 
 #[test]
+fn generated_repo_check_rejects_fake_package_manifest_path_shape() {
+    let repo = init_repo("node-config-fake-manifest", &["--project", "nodejs"]);
+    fs::create_dir_all(repo.path().join("config")).expect("failed to create config dir");
+    fs::write(
+        repo.path().join("config/package.json"),
+        "{\"name\":\"node-config-fake-manifest\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write fake package.json");
+
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        "package_manifest_path = \"package.json\"",
+        "package_manifest_path = \"config/package.json\"",
+    );
+
+    let output = run_generated_repo_check_failure(repo.path(), &["workspace", "local"]);
+    assert!(
+        output.contains("package.json with top-level string `name` and `version` fields"),
+        "expected manifest shape validation failure, got:\n{output}"
+    );
+    assert!(
+        output.contains("config/package.json"),
+        "configured manifest path should appear in failure output:\n{output}"
+    );
+}
+
+#[test]
+fn generated_repo_check_rejects_fake_changelog_path_shape() {
+    let repo = init_repo("node-config-fake-changelog", &["--project", "nodejs"]);
+
+    replace_in_file(
+        &repo.path().join("repo-check.toml"),
+        "changelog_path = \"CHANGELOG.md\"",
+        "changelog_path = \"README.md\"",
+    );
+
+    let output = run_generated_repo_check_failure(repo.path(), &["workspace", "local"]);
+    assert!(
+        output.contains("must contain a `## [Unreleased]` section"),
+        "expected changelog shape validation failure, got:\n{output}"
+    );
+    assert!(
+        output.contains("README.md"),
+        "configured changelog path should appear in failure output:\n{output}"
+    );
+}
+
+#[test]
 fn generated_repo_check_requires_primary_changelog_for_root_changes_in_crate_layout() {
     let repo = init_repo(
         "crate-root-change",
@@ -1116,6 +1166,43 @@ fn generated_repo_check_detects_major_bump_for_workspace_table_inheritance() {
     assert!(
         !output.contains("unsupported version"),
         "workspace table form or prerelease parsing was rejected:\n{output}"
+    );
+}
+
+#[test]
+fn generated_repo_check_detects_major_bump_for_workspace_dotted_inheritance() {
+    let repo = init_repo(
+        "workspace-dotted-major",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    replace_in_file(
+        &repo.path().join("Cargo.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1.0.0+build.1\"",
+    );
+    git_commit_all(
+        repo.path(),
+        "feat(repo)!: prepare workspace dotted version baseline",
+    );
+
+    replace_in_file(
+        &repo.path().join("Cargo.toml"),
+        "version = \"1.0.0+build.1\"",
+        "version = \"2.0.0-rc.1+build.5\"",
+    );
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected workspace-inherited major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "default version.workspace inheritance or build metadata was rejected:\n{output}"
     );
 }
 
