@@ -10,6 +10,7 @@ use toml::Value as TomlValue;
 const TEMPLATE_VERSION: &str = "0.1.0";
 const REPO_CHECK_SCHEMA_VERSION: &str = "1";
 const LEGACY_REPO_CHECK_SCHEMA_VERSION: &str = "1";
+#[cfg(test)]
 const IGNORED_TEMPLATE_DIR_NAMES: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 const PYTHON_RESERVED_KEYWORDS: &[&str] = &[
     "false", "none", "true", "and", "as", "assert", "async", "await", "break", "class", "continue",
@@ -497,38 +498,38 @@ fn template_files_with_roots(
     config: &InitConfig,
     template_roots: &[PathBuf],
 ) -> Result<Vec<TemplateFile>, String> {
-    if template_roots.iter().all(|root| root.is_dir()) {
-        return template_files_from_filesystem(config, template_roots);
+    template_files_with_roots_and_repo_root(config, template_roots, &repo_root())
+}
+
+fn template_files_with_roots_and_repo_root(
+    config: &InitConfig,
+    template_roots: &[PathBuf],
+    repo_root: &Path,
+) -> Result<Vec<TemplateFile>, String> {
+    if template_roots.iter().all(|root| root.is_dir())
+        && let Some(tracked_files) = tracked_template_files(repo_root, template_roots)?
+    {
+        return template_files_from_tracked_files(config, tracked_files);
     }
     embedded_template_files(config)
 }
 
-fn template_files_from_filesystem(
+fn template_files_from_tracked_files(
     config: &InitConfig,
-    template_roots: &[PathBuf],
+    tracked_files: Vec<TrackedTemplateFile>,
 ) -> Result<Vec<TemplateFile>, String> {
     let mut files = RenderedTemplateFiles::new();
-    if let Some(tracked_files) = tracked_template_files(template_roots)? {
-        for (root_index, template_root, source_path) in tracked_files {
-            let relative_source = source_path.strip_prefix(&template_root).map_err(|error| {
-                format!("failed to relativize {}: {error}", source_path.display())
-            })?;
-            let relative_output = render_path(relative_source, config)?;
-            register_template_file(
-                &mut files,
-                root_index,
-                TemplateSource::Filesystem(source_path),
-                relative_output,
-            )?;
-        }
-        return Ok(rendered_template_files(files));
-    }
-
-    for (root_index, root) in template_roots.iter().enumerate() {
-        if !root.is_dir() {
-            return Err(format!("missing template directory: {}", root.display()));
-        }
-        collect_template_files(config, root, root, root_index, &mut files)?;
+    for (root_index, template_root, source_path) in tracked_files {
+        let relative_source = source_path
+            .strip_prefix(&template_root)
+            .map_err(|error| format!("failed to relativize {}: {error}", source_path.display()))?;
+        let relative_output = render_path(relative_source, config)?;
+        register_template_file(
+            &mut files,
+            root_index,
+            TemplateSource::Filesystem(source_path),
+            relative_output,
+        )?;
     }
     Ok(rendered_template_files(files))
 }
@@ -569,19 +570,19 @@ fn rendered_template_files(files: RenderedTemplateFiles) -> Vec<TemplateFile> {
 }
 
 fn tracked_template_files(
+    repo_root: &Path,
     template_roots: &[PathBuf],
 ) -> Result<Option<Vec<TrackedTemplateFile>>, String> {
-    let repo_root = repo_root();
     if !repo_root.join(".git").exists() {
         return Ok(None);
     }
 
     let mut files = Vec::new();
     for (root_index, template_root) in template_roots.iter().enumerate() {
-        let repo_relative = template_root.strip_prefix(&repo_root).map_err(|error| {
+        let repo_relative = template_root.strip_prefix(repo_root).map_err(|error| {
             format!("failed to relativize {}: {error}", template_root.display())
         })?;
-        let Some(tracked_paths) = git_ls_files(&repo_root, repo_relative)? else {
+        let Some(tracked_paths) = git_ls_files(repo_root, repo_relative)? else {
             return Ok(None);
         };
         for tracked_path in tracked_paths {
@@ -634,6 +635,7 @@ fn split_null_terminated_text(text: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn collect_template_files(
     config: &InitConfig,
     template_root: &Path,
@@ -683,6 +685,7 @@ fn register_template_file(
     Ok(())
 }
 
+#[cfg(test)]
 fn should_skip_template_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1010,6 +1013,7 @@ fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
     Ok(entries)
 }
 
+#[cfg(test)]
 fn read_dir_entry_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(read_dir_entries(path)?
         .into_iter()
@@ -1388,6 +1392,46 @@ mod tests {
             .into_iter()
             .map(|file| file.relative_output)
             .collect::<Vec<_>>();
+        assert!(manifest.iter().any(|path| path == "README.md"));
+        assert!(
+            manifest
+                .iter()
+                .any(|path| path == "crates/demo-repo/Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn template_files_prefer_embedded_templates_without_git_metadata_even_if_disk_dirs_exist() {
+        let sandbox = TempDir::new("embedded-without-git");
+        let common_root = sandbox.path().join("templates").join("common");
+        let rust_root = sandbox
+            .path()
+            .join("templates")
+            .join("projects")
+            .join("rust")
+            .join("crate");
+        fs::create_dir_all(&common_root).expect("create common root");
+        fs::create_dir_all(&rust_root).expect("create rust root");
+        fs::write(
+            common_root.join("local-only.txt"),
+            "do not read live template dir\n",
+        )
+        .expect("write local-only artifact");
+
+        let manifest = template_files_with_roots_and_repo_root(
+            &test_config(sandbox.path()),
+            &[common_root, rust_root],
+            sandbox.path(),
+        )
+        .expect("prefer embedded templates without git metadata")
+        .into_iter()
+        .map(|file| file.relative_output)
+        .collect::<Vec<_>>();
+
+        assert!(
+            !manifest.iter().any(|path| path == "local-only.txt"),
+            "manifest unexpectedly included a live template artifact: {manifest:?}"
+        );
         assert!(manifest.iter().any(|path| path == "README.md"));
         assert!(
             manifest
