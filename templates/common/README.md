@@ -53,6 +53,7 @@ cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace ci
 
 1. repo-local manifest：
    `cargo run --manifest-path tools/repo-check/Cargo.toml -- ...`
+   这里直接把 `tools/repo-check/` 当作自包含 crate 运行，hook wrapper 本身不再解析仓库配置。
 2. external binary：
    通过 `OMNE_REPO_CHECK_BIN` 或 PATH 上的 `omne-repo-check` / `repo-check`
 
