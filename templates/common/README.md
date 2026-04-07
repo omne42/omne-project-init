@@ -51,8 +51,8 @@ cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace ci
 
 当前 hook 运行器支持两种形态：
 
-1. repo-local manifest：
-   `cargo run --manifest-path tools/repo-check/Cargo.toml -- ...`
+1. repo-local source runner：
+   hook 会基于 `tools/repo-check/src/main.rs` 临时生成一个隔离 manifest，再通过 cargo 执行检查器
 2. external binary：
    通过 `OMNE_REPO_CHECK_BIN` 或 PATH 上的 `omne-repo-check` / `repo-check`
 

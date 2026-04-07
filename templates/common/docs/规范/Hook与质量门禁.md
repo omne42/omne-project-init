@@ -82,10 +82,12 @@ Windows 下如果 `python` 不可用，检查器会尝试 `python3`，再尝试 
 
 为了让检查器未来可以迁到其他目录，hook 当前支持两种运行形态：
 
-1. repo-local manifest
+1. repo-local source runner
 2. external binary
 
-repo-local manifest 默认是 `tools/repo-check/Cargo.toml`，也可以通过 `OMNE_REPO_CHECK_MANIFEST` 指向其他位置。
+默认情况下，hook 会基于 `tools/repo-check/src/main.rs` 临时生成一个隔离 manifest，再通过 cargo 执行检查器；这样即使 Rust workspace manifest 被迁移，hook 仍然可以稳定进入同一个 Rust 实现。
+
+如果需要显式改走别的 manifest，也可以通过 `OMNE_REPO_CHECK_MANIFEST` 指向其他位置。
 
 hook wrapper 会把 Unix 路径、Windows 盘符绝对路径和 UNC 路径都当作绝对路径处理，不会再错误拼到仓库根目录后面。
 
