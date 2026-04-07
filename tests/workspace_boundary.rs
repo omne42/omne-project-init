@@ -33,7 +33,7 @@ fn generated_repo_check_manifest_is_workspace_isolated_for_python_and_node() {
 }
 
 #[test]
-fn generated_repo_check_manifest_joins_rust_workspace_without_parent_leakage() {
+fn generated_repo_check_manifest_is_workspace_isolated_for_rust_without_joining_workspace() {
     let rust_root = init_repo(
         "rust-root-workspace-boundary",
         &["--project", "rust", "--layout", "root"],
@@ -78,8 +78,8 @@ fn assert_workspace_metadata_succeeds(repo_root: &Path) {
             .arg("1"),
     );
     assert!(
-        output.contains("/tools/repo-check/Cargo.toml"),
-        "workspace metadata did not include repo-check:\n{output}"
+        !output.contains("/tools/repo-check/Cargo.toml"),
+        "workspace metadata unexpectedly included repo-check:\n{output}"
     );
 }
 
