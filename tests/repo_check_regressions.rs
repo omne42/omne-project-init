@@ -802,6 +802,11 @@ fn commit_msg_uses_configured_nested_workspace_manifest_path() {
         &format!("primary_source_path = \"crates/{crate_dir}/src/lib.rs\""),
         &format!("primary_source_path = \"workspace/crates/{crate_dir}/src/lib.rs\""),
     );
+    replace_in_file(
+        repo.path().join("workspace/Cargo.toml"),
+        "\"tools/repo-check\"",
+        "\"../tools/repo-check\"",
+    );
     run_git(repo.path(), &["add", "-A"]);
     commit_all(
         repo.path(),
@@ -817,7 +822,7 @@ fn commit_msg_uses_configured_nested_workspace_manifest_path() {
 
     let commit_msg = repo.path().join("COMMIT_EDITMSG.nested-workspace");
     fs::write(&commit_msg, "feat(repo): stable major without marker\n").expect("write commit msg");
-    let error = run_generated_repo_check_fail(
+    let error = run_template_repo_check_fail(
         repo.path(),
         &[
             "commit-msg",
@@ -1059,6 +1064,37 @@ fn generated_target_dir() -> PathBuf {
             path
         })
         .clone()
+}
+
+fn run_template_repo_check_fail(repo_root: &Path, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--quiet")
+        .arg("--target-dir")
+        .arg(generated_target_dir())
+        .arg("--manifest-path")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("templates/common/tools/repo-check/Cargo.toml"),
+        )
+        .arg("--");
+
+    let mut saw_repo_root = false;
+    for arg in args {
+        if *arg == "--repo-root" {
+            saw_repo_root = true;
+        }
+        command.arg(arg);
+    }
+    if !saw_repo_root {
+        command.arg("--repo-root").arg(repo_root);
+    }
+
+    run_fail("template repo-check", &mut command)
 }
 
 fn replace_in_file(path: PathBuf, from: &str, to: &str) {

@@ -17,12 +17,72 @@ is_absolute_manifest_path() {
   esac
 }
 
+repo_check_config_value() {
+  key="$1"
+  config_path="$repo_root/repo-check.toml"
+  if [ ! -f "$config_path" ]; then
+    return 1
+  fi
+  sed -n "s/^${key}[[:space:]]*=[[:space:]]*['\"]\\(.*\\)['\"][[:space:]]*$/\\1/p" "$config_path" | head -n 1
+}
+
+resolve_rust_workspace_manifest() {
+  project_kind="$(repo_check_config_value project_kind || true)"
+  if [ "$project_kind" != "rust" ]; then
+    return 1
+  fi
+
+  package_manifest_path="$(repo_check_config_value package_manifest_path || true)"
+  if [ -z "$package_manifest_path" ]; then
+    return 1
+  fi
+
+  package_manifest="$repo_root/$package_manifest_path"
+  if [ ! -f "$package_manifest" ]; then
+    return 1
+  fi
+
+  search_dir=$(dirname "$package_manifest_path")
+  if [ -z "$search_dir" ] || [ "$search_dir" = "." ]; then
+    search_dir="."
+  fi
+
+  while [ "$search_dir" != "/" ] && [ "$search_dir" != "." ]; do
+    candidate="$repo_root/$search_dir/Cargo.toml"
+    if [ -f "$candidate" ] && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*$' "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    next_dir=$(dirname "$search_dir")
+    if [ "$next_dir" = "$search_dir" ]; then
+      break
+    fi
+    search_dir="$next_dir"
+  done
+
+  candidate="$repo_root/Cargo.toml"
+  if [ -f "$candidate" ] && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*$' "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
 run_with_manifest() {
   manifest_path="$1"
   if [ ! -f "$manifest_path" ]; then
     return 1
   fi
   exec cargo run --quiet --manifest-path "$manifest_path" -- commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+}
+
+run_with_workspace_manifest() {
+  workspace_manifest="$1"
+  if [ ! -f "$workspace_manifest" ]; then
+    return 1
+  fi
+  exec cargo run --quiet --manifest-path "$workspace_manifest" -p omne-repo-check -- commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
 }
 
 manifest_override="${OMNE_REPO_CHECK_MANIFEST:-}"
@@ -47,6 +107,10 @@ fi
 
 default_manifest="$repo_root/tools/repo-check/Cargo.toml"
 if [ -f "$default_manifest" ] && command -v cargo >/dev/null 2>&1; then
+  workspace_manifest="$(resolve_rust_workspace_manifest || true)"
+  if [ -n "$workspace_manifest" ]; then
+    run_with_workspace_manifest "$workspace_manifest"
+  fi
   run_with_manifest "$default_manifest"
 fi
 
