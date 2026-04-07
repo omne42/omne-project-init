@@ -631,6 +631,11 @@ fn crate_layout_allows_renaming_primary_crate_dir() {
         &format!("changelog_path = \"crates/{old_crate_dir}/CHANGELOG.md\""),
         &format!("changelog_path = \"crates/{new_crate_dir}/CHANGELOG.md\""),
     );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("primary_source_path = \"crates/{old_crate_dir}/src/lib.rs\""),
+        &format!("primary_source_path = \"crates/{new_crate_dir}/src/lib.rs\""),
+    );
 
     let lib_rs = repo
         .path()
@@ -791,6 +796,11 @@ fn commit_msg_uses_configured_nested_workspace_manifest_path() {
         repo.path().join("repo-check.toml"),
         &format!("changelog_path = \"crates/{crate_dir}/CHANGELOG.md\""),
         &format!("changelog_path = \"workspace/crates/{crate_dir}/CHANGELOG.md\""),
+    );
+    replace_in_file(
+        repo.path().join("repo-check.toml"),
+        &format!("primary_source_path = \"crates/{crate_dir}/src/lib.rs\""),
+        &format!("primary_source_path = \"workspace/crates/{crate_dir}/src/lib.rs\""),
     );
     run_git(repo.path(), &["add", "-A"]);
     commit_all(
