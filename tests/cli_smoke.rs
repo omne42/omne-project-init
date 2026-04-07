@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,17 +19,16 @@ fn manifest_lists_expected_files_for_supported_projects() {
         "--layout",
         "crate",
     ]);
-    assert_manifest_contains(
+    assert_manifest_matches_templates(
         &rust_output,
-        &[
-            "\"githooks/pre-commit\"",
-            "\"repo-check.toml\"",
-            "\"Cargo.lock\"",
-            "\"docs/docs-system-map.md\"",
-            "\"tools/repo-check/src/main.rs\"",
-            "\"crates/rust-crate/Cargo.toml\"",
-            "\"crates/rust-crate/CHANGELOG.md\"",
-        ],
+        ManifestSpec {
+            project_kind: ProjectKind::Rust,
+            layout: Layout::Crate,
+            repo_name: "rust-crate",
+            package_name: "rust-crate",
+            crate_dir: "rust-crate",
+            python_package: "rust_crate",
+        },
     );
 
     let python_output = run_cli([
@@ -37,15 +37,16 @@ fn manifest_lists_expected_files_for_supported_projects() {
         "--project",
         "python",
     ]);
-    assert_manifest_contains(
+    assert_manifest_matches_templates(
         &python_output,
-        &[
-            "\"pyproject.toml\"",
-            "\"python_app/__init__.py\"",
-            "\"CHANGELOG.md\"",
-            "\"docs/docs-system-map.md\"",
-            "\"repo-check.toml\"",
-        ],
+        ManifestSpec {
+            project_kind: ProjectKind::Python,
+            layout: Layout::Root,
+            repo_name: "python-app",
+            package_name: "python-app",
+            crate_dir: "python-app",
+            python_package: "python_app",
+        },
     );
 
     let node_output = run_cli([
@@ -54,15 +55,16 @@ fn manifest_lists_expected_files_for_supported_projects() {
         "--project",
         "nodejs",
     ]);
-    assert_manifest_contains(
+    assert_manifest_matches_templates(
         &node_output,
-        &[
-            "\"package.json\"",
-            "\"src/index.js\"",
-            "\"test/basic.test.js\"",
-            "\"docs/docs-system-map.md\"",
-            "\"tools/repo-check/Cargo.toml\"",
-        ],
+        ManifestSpec {
+            project_kind: ProjectKind::Nodejs,
+            layout: Layout::Root,
+            repo_name: "node-app",
+            package_name: "node-app",
+            crate_dir: "node-app",
+            python_package: "node_app",
+        },
     );
 }
 
@@ -1330,13 +1332,195 @@ fn copy_dir_all(source: &Path, destination: &Path) {
     }
 }
 
-fn assert_manifest_contains(output: &str, expected_entries: &[&str]) {
-    for entry in expected_entries {
-        assert!(
-            output.contains(entry),
-            "manifest output did not contain {entry}\n\noutput:\n{output}"
-        );
+#[derive(Clone, Copy)]
+enum ProjectKind {
+    Rust,
+    Python,
+    Nodejs,
+}
+
+impl ProjectKind {
+    fn template_dir(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::Nodejs => "nodejs",
+        }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::Nodejs => "nodejs",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Layout {
+    Root,
+    Crate,
+}
+
+impl Layout {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Crate => "crate",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Root => "root-package repository",
+            Self::Crate => "crate-package directory",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ManifestSpec {
+    project_kind: ProjectKind,
+    layout: Layout,
+    repo_name: &'static str,
+    package_name: &'static str,
+    crate_dir: &'static str,
+    python_package: &'static str,
+}
+
+impl ManifestSpec {
+    fn changelog_path(self) -> String {
+        match self.layout {
+            Layout::Root => "CHANGELOG.md".to_string(),
+            Layout::Crate => format!("crates/{}/CHANGELOG.md", self.crate_dir),
+        }
+    }
+
+    fn package_manifest_path(self) -> String {
+        match (self.project_kind, self.layout) {
+            (ProjectKind::Rust, Layout::Root) => "Cargo.toml".to_string(),
+            (ProjectKind::Rust, Layout::Crate) => format!("crates/{}/Cargo.toml", self.crate_dir),
+            (ProjectKind::Python, _) => "pyproject.toml".to_string(),
+            (ProjectKind::Nodejs, _) => "package.json".to_string(),
+        }
+    }
+
+    fn primary_source_path(self) -> String {
+        match (self.project_kind, self.layout) {
+            (ProjectKind::Rust, Layout::Root) => "src/main.rs".to_string(),
+            (ProjectKind::Rust, Layout::Crate) => {
+                format!("crates/{}/src/lib.rs", self.crate_dir)
+            }
+            (ProjectKind::Python, _) => format!("{}/__init__.py", self.python_package),
+            (ProjectKind::Nodejs, _) => "src/index.js".to_string(),
+        }
+    }
+}
+
+fn assert_manifest_matches_templates(output: &str, spec: ManifestSpec) {
+    let actual = parse_manifest_output(output);
+    let expected = expected_manifest_entries(spec);
+    assert_eq!(
+        actual, expected,
+        "manifest output drifted from tracked template set"
+    );
+}
+
+fn parse_manifest_output(output: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line == "[" || line == "]" || line.is_empty() {
+            continue;
+        }
+        let value = line
+            .trim_end_matches(',')
+            .trim()
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("invalid manifest entry line: {line}"));
+        entries.push(value.to_string());
+    }
+    entries
+}
+
+fn expected_manifest_entries(spec: ManifestSpec) -> Vec<String> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let common_prefix = PathBuf::from("templates/common");
+    let project_prefix = PathBuf::from(format!(
+        "templates/projects/{}/{}",
+        spec.project_kind.template_dir(),
+        spec.layout.as_str()
+    ));
+    let tracked_paths = git_ls_files(
+        &repo_root,
+        &[common_prefix.as_path(), project_prefix.as_path()],
+    );
+
+    let mut entries = BTreeSet::new();
+    for tracked_path in tracked_paths {
+        let relative_path = tracked_path
+            .strip_prefix(&common_prefix)
+            .or_else(|_| tracked_path.strip_prefix(&project_prefix))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "tracked template path {} was outside expected prefixes",
+                    tracked_path.display()
+                )
+            });
+        entries.insert(render_template_path(&relative_path.to_string_lossy(), spec));
+    }
+
+    entries.into_iter().collect()
+}
+
+fn render_template_path(value: &str, spec: ManifestSpec) -> String {
+    value
+        .replace("__TEMPLATE_VERSION__", "0.1.0")
+        .replace("__REPO_CHECK_SCHEMA_VERSION__", "1")
+        .replace("__REPO_NAME__", spec.repo_name)
+        .replace("__PACKAGE_NAME__", spec.package_name)
+        .replace("__CRATE_DIR__", spec.crate_dir)
+        .replace("__PY_PACKAGE__", spec.python_package)
+        .replace("__PROJECT_KIND__", spec.project_kind.as_str())
+        .replace("__LAYOUT__", spec.layout.as_str())
+        .replace("__LAYOUT_LABEL__", spec.layout.label())
+        .replace("__CHANGELOG_PATH__", &spec.changelog_path())
+        .replace("__PACKAGE_MANIFEST_PATH__", &spec.package_manifest_path())
+        .replace("__PRIMARY_SOURCE_PATH__", &spec.primary_source_path())
+        .replace(
+            "__PRIMARY_VALIDATION_COMMAND__",
+            "cargo run --manifest-path tools/repo-check/Cargo.toml -- workspace local",
+        )
+}
+
+fn git_ls_files(repo_root: &Path, pathspecs: &[&Path]) -> Vec<PathBuf> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo_root)
+        .arg("ls-files")
+        .arg("-z")
+        .arg("--");
+    for pathspec in pathspecs {
+        command.arg(pathspec);
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("git ls-files failed: {error}"));
+    assert!(
+        output.status.success(),
+        "git ls-files failed:\n{}",
+        render_output(&output)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("git ls-files stdout must be utf-8");
+    stdout
+        .split('\0')
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
 
 fn run_ok(label: &str, command: &mut Command) -> String {
