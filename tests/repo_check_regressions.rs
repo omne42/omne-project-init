@@ -197,6 +197,20 @@ fn workspace_local_rejects_unknown_repo_check_schema_version() {
 }
 
 #[test]
+fn validate_branch_rejects_non_git_repo() {
+    let repo = init_repo(
+        "validate-branch-non-git",
+        &["--project", "rust", "--layout", "root"],
+    );
+
+    let error = run_generated_repo_check_fail(repo.path(), &["validate-branch"]);
+    assert!(
+        error.contains("not a git repository"),
+        "expected non-git branch validation failure, got: {error}"
+    );
+}
+
+#[test]
 fn commit_msg_detects_top_level_node_major_bump() {
     let repo = init_repo("node-major-bump", &["--project", "nodejs"]);
     git_init(repo.path());

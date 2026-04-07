@@ -541,11 +541,9 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
 }
 
 fn validate_branch_name(repo_root: &Path) -> Result<(), String> {
-    let branch = git_output(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"], true)?;
-    let branch = branch.trim();
-    if branch.is_empty() || branch == "HEAD" {
+    let Some(branch) = git_current_branch(repo_root)? else {
         return Ok(());
-    }
+    };
     if branch == "main" || branch == "master" {
         return Ok(());
     }
@@ -560,6 +558,23 @@ fn validate_branch_name(repo_root: &Path) -> Result<(), String> {
         "repo-check: invalid branch name: {branch}\n\nBranch must be `main`, `master`, or start with one of:\n- {}",
         ALLOWED_BRANCH_PREFIXES.join("\n- ")
     ))
+}
+
+fn git_current_branch(repo_root: &Path) -> Result<Option<String>, String> {
+    let args = ["symbolic-ref", "--quiet", "--short", "HEAD"];
+    let output = run_git(repo_root, &args)?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if branch.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(branch));
+    }
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+
+    Err(render_git_failure(repo_root, &args, &output))
 }
 
 fn collect_staged_state(repo_root: &Path, config: &RepoConfig) -> Result<StagedState, String> {
