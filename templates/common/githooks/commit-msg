@@ -9,6 +9,10 @@ fi
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+escape_toml_string() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 is_absolute_manifest_path() {
   case "$1" in
     /* | [A-Za-z]:/* | [A-Za-z]:\\* | //*) return 0 ;;
@@ -23,6 +27,41 @@ run_with_manifest() {
     return 1
   fi
   exec cargo run --quiet --manifest-path "$manifest_path" -- commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
+}
+
+run_with_isolated_source() {
+  source_path="$repo_root/tools/repo-check/src/main.rs"
+  if [ ! -f "$source_path" ]; then
+    return 1
+  fi
+  runner_dir=$(mktemp -d "${TMPDIR:-/tmp}/omne-repo-check-runner.XXXXXX")
+  trap 'rm -rf "$runner_dir"' EXIT HUP INT TERM
+  manifest_path="$runner_dir/Cargo.toml"
+  escaped_source=$(escape_toml_string "$source_path")
+  cat >"$manifest_path" <<EOF
+[package]
+name = "omne-repo-check-runner"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+toml = "0.8"
+
+[[bin]]
+name = "omne-repo-check"
+path = "$escaped_source"
+EOF
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo_root/.git/omne-repo-check-target}"
+  if cargo run --quiet --manifest-path "$manifest_path" -- commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -rf "$runner_dir"
+  exit "$status"
 }
 
 manifest_override="${OMNE_REPO_CHECK_MANIFEST:-}"
@@ -45,9 +84,15 @@ if [ -n "$binary_override" ]; then
   exec "$binary_override" commit-msg --repo-root "$repo_root" --commit-msg-file "$msg_file"
 fi
 
+default_source="$repo_root/tools/repo-check/src/main.rs"
 default_manifest="$repo_root/tools/repo-check/Cargo.toml"
-if [ -f "$default_manifest" ] && command -v cargo >/dev/null 2>&1; then
-  run_with_manifest "$default_manifest"
+if command -v cargo >/dev/null 2>&1; then
+  if [ -f "$default_source" ]; then
+    run_with_isolated_source
+  fi
+  if [ -f "$default_manifest" ]; then
+    run_with_manifest "$default_manifest"
+  fi
 fi
 
 if command -v omne-repo-check >/dev/null 2>&1; then
@@ -62,7 +107,7 @@ cat >&2 <<'EOF'
 commit-msg: unable to locate a repo-check runner.
 
 Supported forms:
-- repo-local manifest: tools/repo-check/Cargo.toml
+- repo-local source runner: tools/repo-check/src/main.rs
 - repo-local manifest override: OMNE_REPO_CHECK_MANIFEST=path/to/Cargo.toml
 - external binary override: OMNE_REPO_CHECK_BIN=/path/to/omne-repo-check
 - external binary on PATH: omne-repo-check or repo-check

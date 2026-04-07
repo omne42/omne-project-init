@@ -158,6 +158,59 @@ fn workspace_local_validates_declared_python_requires_python() {
     );
 }
 
+#[test]
+fn pre_commit_detects_major_bump_from_inline_pyproject_project_table() {
+    let repo = init_repo("python-inline-project-table", &["--project", "python"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    fs::write(
+        repo.path().join("pyproject.toml"),
+        concat!(
+            "project = { ",
+            "name = \"python-inline-project-table\", ",
+            "version = \"1.2.3\", ",
+            "requires-python = \">=3.11\"",
+            " }\n\n",
+            "[build-system]\n",
+            "requires = [\"setuptools>=68\", \"wheel\"]\n",
+            "build-backend = \"setuptools.build_meta\"\n\n",
+        ),
+    )
+    .expect("write inline-table pyproject baseline");
+    git_add(repo.path(), &["pyproject.toml"]);
+    commit_all(
+        repo.path(),
+        "chore(pyproject): prepare inline-table baseline",
+    );
+
+    fs::write(
+        repo.path().join("pyproject.toml"),
+        concat!(
+            "project = { ",
+            "name = \"python-inline-project-table\", ",
+            "version = \"2.0.0\", ",
+            "requires-python = \">=3.11\"",
+            " }\n\n",
+            "[build-system]\n",
+            "requires = [\"setuptools>=68\", \"wheel\"]\n",
+            "build-backend = \"setuptools.build_meta\"\n\n",
+        ),
+    )
+    .expect("write inline-table pyproject major bump");
+    git_add(repo.path(), &["pyproject.toml"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("refusing major version change by default"),
+        "expected inline-table pyproject major bump gate, got: {error}"
+    );
+    assert!(
+        !error.contains("unsupported version"),
+        "inline-table pyproject version was rejected as non-semantic: {error}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_local_preserves_symlinked_primary_source() {
@@ -817,14 +870,7 @@ fn commit_msg_uses_configured_nested_workspace_manifest_path() {
 
     let commit_msg = repo.path().join("COMMIT_EDITMSG.nested-workspace");
     fs::write(&commit_msg, "feat(repo): stable major without marker\n").expect("write commit msg");
-    let error = run_generated_repo_check_fail(
-        repo.path(),
-        &[
-            "commit-msg",
-            "--commit-msg-file",
-            commit_msg.to_string_lossy().as_ref(),
-        ],
-    );
+    let error = run_generated_hook_fail(repo.path(), "commit-msg", &[commit_msg.as_path()]);
     assert!(
         error.contains("requires an explicit breaking commit message"),
         "expected nested workspace manifest path to drive major bump detection, got: {error}"
@@ -987,6 +1033,15 @@ fn run_generated_repo_check_fail(repo_root: &Path, args: &[&str]) -> String {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = generated_repo_check_command(repo_root, args, true);
     run_fail("generated repo-check", &mut command)
+}
+
+fn run_generated_hook_fail(repo_root: &Path, hook_name: &str, args: &[&Path]) -> String {
+    let mut command = Command::new(repo_root.join("githooks").join(hook_name));
+    command.current_dir(repo_root);
+    for arg in args {
+        command.arg(arg);
+    }
+    run_fail("generated hook", &mut command)
 }
 
 fn run_generated_repo_check_from_dir(
