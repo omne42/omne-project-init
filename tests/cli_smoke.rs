@@ -658,6 +658,8 @@ fn generated_docs_include_map_entrypoints_and_branch_protection_policy() {
         .expect("failed to read docs system map");
     let branch_rules = fs::read_to_string(repo.path().join("docs/规范/提交与分支.md"))
         .expect("failed to read branch policy doc");
+    let changelog_rules = fs::read_to_string(repo.path().join("docs/规范/变更记录.md"))
+        .expect("failed to read changelog policy doc");
     let hook_rules = fs::read_to_string(repo.path().join("docs/规范/Hook与质量门禁.md"))
         .expect("failed to read hook policy doc");
 
@@ -666,10 +668,13 @@ fn generated_docs_include_map_entrypoints_and_branch_protection_policy() {
     assert!(docs_readme.contains("./docs-system-map.md"));
     assert!(docs_map.contains("docs/规范/提交与分支.md"));
     assert!(branch_rules.contains("必需的 CI / CD status checks 全部通过"));
+    assert!(branch_rules.contains("$env:OMNE_ALLOW_MAJOR_VERSION_BUMP = '1'"));
     assert!(
         hook_rules
             .contains("本地 hook 和 `repo-check workspace local` 负责把高频问题尽量前移到开发机")
     );
+    assert!(changelog_rules.contains("$env:OMNE_ALLOW_CHANGELOG_RELEASE_EDIT = '1'"));
+    assert!(hook_rules.contains("$env:OMNE_ALLOW_CHANGELOG_RELEASE_EDIT = '1'"));
 }
 
 #[test]

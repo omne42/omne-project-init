@@ -39,6 +39,20 @@
 - 如果一个 crate 被整体删除，对应的 crate changelog 可以随之删除
 - Rust crate layout 下，如果 workspace 根版本变更导致继承 `version.workspace = true` 的 crate 有效版本变化，相关 crate 的 changelog 也必须同步更新
 
+override 示例：
+
+```bash
+OMNE_ALLOW_CHANGELOG_RELEASE_EDIT=1 git commit ...
+OMNE_ALLOW_MAJOR_VERSION_BUMP=1 git commit ...
+```
+
+```powershell
+$env:OMNE_ALLOW_CHANGELOG_RELEASE_EDIT = '1'
+git commit ...
+$env:OMNE_ALLOW_MAJOR_VERSION_BUMP = '1'
+git commit ...
+```
+
 ## `commit-msg` 当前做什么
 
 它会做三件事：

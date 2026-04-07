@@ -1222,8 +1222,10 @@ fn validate_released_sections_immutable(
         }
 
         return Err(
-            "repo-check: refusing to modify released CHANGELOG sections.\n\nOnly edit entries under [Unreleased].\nIf you are intentionally cutting a release, re-run with:\n  OMNE_ALLOW_CHANGELOG_RELEASE_EDIT=1 git commit ..."
-                .to_string(),
+            format!(
+                "repo-check: refusing to modify released CHANGELOG sections.\n\nOnly edit entries under [Unreleased].\nIf you are intentionally cutting a release, re-run with:\n{}",
+                override_instructions("OMNE_ALLOW_CHANGELOG_RELEASE_EDIT", "git commit ...")
+            ),
         );
     }
 
@@ -1263,9 +1265,16 @@ fn require_major_bump_override(repo_root: &Path, config: &RepoConfig) -> Result<
     }
 
     Err(format!(
-        "repo-check: refusing major version change by default.\n\nThe following targets changed their major segment:\n{}\n\nRe-run with:\n  OMNE_ALLOW_MAJOR_VERSION_BUMP=1 git commit ...",
-        bullet_list(changed_targets.iter().map(format_version_target))
+        "repo-check: refusing major version change by default.\n\nThe following targets changed their major segment:\n{}\n\nRe-run with:\n{}",
+        bullet_list(changed_targets.iter().map(format_version_target)),
+        override_instructions("OMNE_ALLOW_MAJOR_VERSION_BUMP", "git commit ...")
     ))
+}
+
+fn override_instructions(variable: &str, command: &str) -> String {
+    format!(
+        "  POSIX: {variable}=1 {command}\n  PowerShell:\n    $env:{variable} = '1'\n    {command}"
+    )
 }
 
 fn require_breaking_commit_marker(

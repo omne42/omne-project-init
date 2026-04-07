@@ -322,6 +322,14 @@ fn pre_commit_requires_override_for_stable_major_transition() {
         error.contains("refusing major version change by default"),
         "expected stable major transition to require override, got: {error}"
     );
+    assert!(
+        error.contains("POSIX: OMNE_ALLOW_MAJOR_VERSION_BUMP=1 git commit ..."),
+        "expected POSIX override example, got: {error}"
+    );
+    assert!(
+        error.contains("$env:OMNE_ALLOW_MAJOR_VERSION_BUMP = '1'"),
+        "expected PowerShell override example, got: {error}"
+    );
 
     run_generated_repo_check_with_env(
         repo.path(),
@@ -400,6 +408,49 @@ fn commit_msg_requires_breaking_marker_for_stable_major_transition() {
             "--commit-msg-file",
             breaking_commit_msg.to_string_lossy().as_ref(),
         ],
+    );
+}
+
+#[test]
+fn pre_commit_release_edit_error_mentions_powershell_override() {
+    let repo = init_repo(
+        "rust-release-edit-override",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    fs::write(
+        repo.path().join("CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n- Initialize the release edit override repo.\n\n## [0.1.0] - 2026-04-08\n\n- Initial release.\n",
+    )
+    .expect("write released changelog");
+    git_add(repo.path(), &["CHANGELOG.md"]);
+    commit_all(repo.path(), "docs(changelog): add initial release section");
+
+    replace_in_file(
+        repo.path().join("CHANGELOG.md"),
+        "## [0.1.0] - 2026-04-08",
+        "## [0.1.0] - 2026-05-01",
+    );
+    append_to_file(
+        &repo.path().join("README.md"),
+        "\nrelease metadata touched\n",
+    );
+    git_add(repo.path(), &["CHANGELOG.md", "README.md"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("OMNE_ALLOW_CHANGELOG_RELEASE_EDIT"),
+        "expected release edit override message, got: {error}"
+    );
+    assert!(
+        error.contains("POSIX: OMNE_ALLOW_CHANGELOG_RELEASE_EDIT=1 git commit ..."),
+        "expected POSIX release override example, got: {error}"
+    );
+    assert!(
+        error.contains("$env:OMNE_ALLOW_CHANGELOG_RELEASE_EDIT = '1'"),
+        "expected PowerShell release override example, got: {error}"
     );
 }
 
