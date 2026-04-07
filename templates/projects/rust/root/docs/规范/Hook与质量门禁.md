@@ -35,6 +35,20 @@
 
 - root layout 下，只有会触及发布面的实际改动才要求同步更新 `repo-check.toml` 配置的 changelog；纯文档和治理包装改动不会被强制写 changelog
 
+override 示例：
+
+```bash
+OMNE_ALLOW_CHANGELOG_RELEASE_EDIT=1 git commit ...
+OMNE_ALLOW_MAJOR_VERSION_BUMP=1 git commit ...
+```
+
+```powershell
+$env:OMNE_ALLOW_CHANGELOG_RELEASE_EDIT = '1'
+git commit ...
+$env:OMNE_ALLOW_MAJOR_VERSION_BUMP = '1'
+git commit ...
+```
+
 ## `commit-msg` 当前做什么
 
 它会做三件事：
