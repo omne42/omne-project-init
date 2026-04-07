@@ -132,8 +132,11 @@ impl SyntheticParentWorkspace {
     fn new(prefix: &str) -> Self {
         let root = fresh_target_dir(prefix);
         fs::create_dir_all(&root).expect("create synthetic workspace root");
-        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"workspace-member\"]\n")
-            .expect("write synthetic workspace manifest");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"workspace-member\"]\n",
+        )
+        .expect("write synthetic workspace manifest");
         fs::create_dir_all(root.join("workspace-member/src"))
             .expect("create synthetic workspace member");
         fs::write(
@@ -141,8 +144,11 @@ impl SyntheticParentWorkspace {
             "[package]\nname = \"workspace-member\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write synthetic workspace member manifest");
-        fs::write(root.join("workspace-member/src/lib.rs"), "pub fn workspace_member() {}\n")
-            .expect("write synthetic workspace member source");
+        fs::write(
+            root.join("workspace-member/src/lib.rs"),
+            "pub fn workspace_member() {}\n",
+        )
+        .expect("write synthetic workspace member source");
         Self { root }
     }
 
