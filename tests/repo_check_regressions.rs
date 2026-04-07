@@ -158,6 +158,56 @@ fn workspace_local_validates_declared_python_requires_python() {
     );
 }
 
+#[test]
+fn pre_commit_detects_major_bump_from_inline_pyproject_project_table() {
+    let repo = init_repo("python-inline-project-table", &["--project", "python"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    fs::write(
+        repo.path().join("pyproject.toml"),
+        concat!(
+            "project = { ",
+            "name = \"python-inline-project-table\", ",
+            "version = \"1.2.3\", ",
+            "requires-python = \">=3.11\"",
+            " }\n\n",
+            "[build-system]\n",
+            "requires = [\"setuptools>=68\", \"wheel\"]\n",
+            "build-backend = \"setuptools.build_meta\"\n\n",
+        ),
+    )
+    .expect("write inline-table pyproject baseline");
+    git_add(repo.path(), &["pyproject.toml"]);
+    commit_all(repo.path(), "chore(pyproject): prepare inline-table baseline");
+
+    fs::write(
+        repo.path().join("pyproject.toml"),
+        concat!(
+            "project = { ",
+            "name = \"python-inline-project-table\", ",
+            "version = \"2.0.0\", ",
+            "requires-python = \">=3.11\"",
+            " }\n\n",
+            "[build-system]\n",
+            "requires = [\"setuptools>=68\", \"wheel\"]\n",
+            "build-backend = \"setuptools.build_meta\"\n\n",
+        ),
+    )
+    .expect("write inline-table pyproject major bump");
+    git_add(repo.path(), &["pyproject.toml"]);
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("refusing major version change by default"),
+        "expected inline-table pyproject major bump gate, got: {error}"
+    );
+    assert!(
+        !error.contains("unsupported version"),
+        "inline-table pyproject version was rejected as non-semantic: {error}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_local_preserves_symlinked_primary_source() {
