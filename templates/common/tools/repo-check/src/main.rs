@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -466,15 +466,20 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
         return Err("repo-check: crate layout is only supported for rust projects".to_string());
     }
 
+    validate_required_configured_file(
+        repo_root,
+        &config.package_manifest_path,
+        "package_manifest_path",
+    )?;
+    validate_required_configured_file(repo_root, &config.changelog_path, "changelog_path")?;
+
     match (config.project_kind, config.layout) {
         (ProjectKind::Rust, Layout::Root) => {
-            let manifest = repo_root.join(&config.package_manifest_path);
-            if !manifest.is_file() {
-                return Err(format!(
-                    "repo-check: rust root layout requires a package manifest at {}",
-                    config.package_manifest_path
-                ));
-            }
+            validate_required_configured_file(
+                repo_root,
+                &config.primary_source_path,
+                "primary_source_path",
+            )?;
         }
         (ProjectKind::Rust, Layout::Crate) => {
             let layout_paths = crate_layout_paths(config)?;
@@ -485,20 +490,6 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
                         config.package_manifest_path
                     )
                 })?;
-            let primary_manifest = repo_root.join(&config.package_manifest_path);
-            if !primary_manifest.is_file() {
-                return Err(format!(
-                    "repo-check: rust crate layout requires the primary package manifest at {}",
-                    config.package_manifest_path
-                ));
-            }
-            let primary_changelog = repo_root.join(&config.changelog_path);
-            if !primary_changelog.is_file() {
-                return Err(format!(
-                    "repo-check: rust crate layout requires the primary crate changelog at {}",
-                    config.changelog_path
-                ));
-            }
             let crate_dirs =
                 discover_crate_dirs(repo_root, &layout_paths, &workspace_manifest.path)?;
             if crate_dirs.is_empty() {
@@ -517,27 +508,97 @@ fn validate_layout_shape(repo_root: &Path, config: &RepoConfig) -> Result<(), St
                     layout_paths.container_dir.display()
                 ));
             }
+
+            validate_primary_source_in_primary_crate(repo_root, config, &layout_paths)?;
         }
         (ProjectKind::Python, Layout::Root) => {
-            if !repo_root.join(&config.package_manifest_path).is_file() {
-                return Err(format!(
-                    "repo-check: python root layout requires a package manifest at {}",
-                    config.package_manifest_path
-                ));
-            }
+            validate_required_configured_file(
+                repo_root,
+                &config.primary_source_path,
+                "primary_source_path",
+            )?;
         }
         (ProjectKind::Nodejs, Layout::Root) => {
-            if !repo_root.join(&config.package_manifest_path).is_file() {
-                return Err(format!(
-                    "repo-check: nodejs root layout requires a package manifest at {}",
-                    config.package_manifest_path
-                ));
-            }
+            validate_required_configured_file(
+                repo_root,
+                &config.primary_source_path,
+                "primary_source_path",
+            )?;
         }
         _ => {}
     }
 
     Ok(())
+}
+
+fn validate_required_configured_file(
+    repo_root: &Path,
+    raw_path: &str,
+    key: &str,
+) -> Result<PathBuf, String> {
+    let validated = validate_repo_relative_path(raw_path, key)?;
+    let absolute = repo_root.join(&validated);
+    if absolute.is_file() {
+        return Ok(absolute);
+    }
+    Err(format!(
+        "repo-check: configured {key} does not exist as a file: {raw_path}"
+    ))
+}
+
+fn validate_repo_relative_path(raw_path: &str, key: &str) -> Result<PathBuf, String> {
+    let path = Path::new(raw_path);
+    let mut saw_normal_component = false;
+
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => saw_normal_component = true,
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(format!(
+                    "repo-check: {key} must be a normalized repository-relative path: {raw_path}"
+                ));
+            }
+        }
+    }
+
+    if !saw_normal_component {
+        return Err(format!(
+            "repo-check: {key} must be a normalized repository-relative path: {raw_path}"
+        ));
+    }
+
+    Ok(path.to_path_buf())
+}
+
+fn validate_primary_source_in_primary_crate(
+    repo_root: &Path,
+    config: &RepoConfig,
+    layout_paths: &CrateLayoutPaths,
+) -> Result<(), String> {
+    let primary_source = validate_required_configured_file(
+        repo_root,
+        &config.primary_source_path,
+        "primary_source_path",
+    )?;
+    let primary_crate_root = repo_root
+        .join(&layout_paths.container_dir)
+        .join(&config.crate_dir);
+    if primary_source.starts_with(&primary_crate_root) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "repo-check: primary_source_path `{}` must live under the primary crate directory {}",
+        config.primary_source_path,
+        normalize_repo_relative_path(
+            primary_crate_root
+                .strip_prefix(repo_root)
+                .unwrap_or(&primary_crate_root)
+        )
+    ))
 }
 
 fn validate_branch_name(repo_root: &Path) -> Result<(), String> {
