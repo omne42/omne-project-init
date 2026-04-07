@@ -1,9 +1,9 @@
 [package]
-name = "omne-project-init"
+name = "omne-repo-check"
 version = "0.1.0"
 edition = "2024"
-
-[workspace]
+workspace = "../.."
 
 [dependencies]
+serde_json = "1"
 toml = "0.8"
