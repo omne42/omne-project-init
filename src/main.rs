@@ -840,6 +840,19 @@ fn cleanup_existing_scaffold(config: &InitConfig) -> Result<(), String> {
         ));
     }
 
+    let stale_residue =
+        unmanaged_stale_path_residue(&config.target_dir, &old_manifest, &new_manifest)?;
+    if !stale_residue.is_empty() {
+        return Err(format!(
+            "`--force` refused because obsolete generated directories still contain non-generated paths.\n\nRemove these paths before re-running:\n{}",
+            stale_residue
+                .iter()
+                .map(|path| format!("- {path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
     let mut managed_paths = std::collections::BTreeSet::new();
     managed_paths.extend(old_manifest);
     managed_paths.extend(new_manifest);
@@ -888,6 +901,110 @@ fn unmanaged_new_path_collisions(
     }
     collisions.sort();
     Ok(collisions)
+}
+
+fn unmanaged_stale_path_residue(
+    target_dir: &Path,
+    old_manifest: &[String],
+    new_manifest: &[String],
+) -> Result<Vec<String>, String> {
+    let old_files: std::collections::BTreeSet<String> = old_manifest.iter().cloned().collect();
+    let old_directories = manifest_directories(old_manifest);
+    let stale_roots = stale_generated_directory_roots(old_manifest, new_manifest);
+    let mut residue = std::collections::BTreeSet::new();
+
+    for stale_root in stale_roots {
+        let root = target_dir.join(&stale_root);
+        if !root.exists() {
+            continue;
+        }
+        collect_unmanaged_stale_paths(
+            target_dir,
+            &root,
+            &old_files,
+            &old_directories,
+            &mut residue,
+        )?;
+    }
+
+    Ok(residue.into_iter().collect())
+}
+
+fn manifest_directories(manifest: &[String]) -> std::collections::BTreeSet<String> {
+    let mut directories = std::collections::BTreeSet::new();
+    for relative_path in manifest {
+        let mut current = Path::new(relative_path).parent();
+        while let Some(parent) = current {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            directories.insert(parent.to_string_lossy().replace('\\', "/"));
+            current = parent.parent();
+        }
+    }
+    directories
+}
+
+fn stale_generated_directory_roots(
+    old_manifest: &[String],
+    new_manifest: &[String],
+) -> Vec<String> {
+    let new_directories = manifest_directories(new_manifest);
+    let mut stale_directories: Vec<String> = manifest_directories(old_manifest)
+        .into_iter()
+        .filter(|directory| !new_directories.contains(directory))
+        .collect();
+    stale_directories.sort_by(|left, right| {
+        let left_depth = Path::new(left).components().count();
+        let right_depth = Path::new(right).components().count();
+        left_depth.cmp(&right_depth).then_with(|| left.cmp(right))
+    });
+
+    let mut roots = Vec::new();
+    for directory in stale_directories {
+        if roots
+            .iter()
+            .any(|root| Path::new(&directory).starts_with(Path::new(root)))
+        {
+            continue;
+        }
+        roots.push(directory);
+    }
+    roots
+}
+
+fn collect_unmanaged_stale_paths(
+    target_dir: &Path,
+    current: &Path,
+    old_files: &std::collections::BTreeSet<String>,
+    old_directories: &std::collections::BTreeSet<String>,
+    residue: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let relative = normalized_relative_template_path(
+        current
+            .strip_prefix(target_dir)
+            .map_err(|error| format!("failed to relativize {}: {error}", current.display()))?,
+    )?;
+    if !old_files.contains(&relative) && !old_directories.contains(&relative) {
+        residue.insert(relative);
+    }
+
+    let metadata = fs::symlink_metadata(current)
+        .map_err(|error| format!("failed to inspect {}: {error}", current.display()))?;
+    if !metadata.file_type().is_dir() {
+        return Ok(());
+    }
+
+    for entry in read_dir_entries(current)? {
+        collect_unmanaged_stale_paths(
+            target_dir,
+            &entry.path(),
+            old_files,
+            old_directories,
+            residue,
+        )?;
+    }
+    Ok(())
 }
 
 fn remove_managed_path(path: &Path) -> Result<(), String> {
