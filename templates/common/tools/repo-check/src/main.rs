@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1902,7 +1904,7 @@ fn run_workspace_checks_on_staged_snapshot(
 ) -> Result<(), String> {
     let snapshot = TempDir::new("repo-check-index")?;
     export_index_snapshot(repo_root, snapshot.path())?;
-    run_workspace_checks(snapshot.path(), repo_root, config, mode)
+    run_workspace_checks(snapshot.path(), snapshot.path(), config, mode)
 }
 
 fn run_workspace_checks_on_worktree_snapshot(
@@ -1912,7 +1914,7 @@ fn run_workspace_checks_on_worktree_snapshot(
 ) -> Result<(), String> {
     let snapshot = TempDir::new("repo-check-worktree")?;
     copy_worktree_snapshot(repo_root, snapshot.path())?;
-    run_workspace_checks(snapshot.path(), repo_root, config, mode)
+    run_workspace_checks(snapshot.path(), snapshot.path(), config, mode)
 }
 
 fn export_index_snapshot(repo_root: &Path, destination: &Path) -> Result<(), String> {
@@ -2271,7 +2273,7 @@ fn run_workspace_checks(
     }
 }
 
-fn shared_cargo_target_dir(_target_root_key: &Path) -> Result<PathBuf, String> {
+fn shared_cargo_target_dir(target_root_key: &Path) -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("CARGO_TARGET_DIR") {
         let path = PathBuf::from(path);
         fs::create_dir_all(&path).map_err(|error| {
@@ -2283,7 +2285,7 @@ fn shared_cargo_target_dir(_target_root_key: &Path) -> Result<PathBuf, String> {
         return Ok(path);
     }
 
-    let path = env::temp_dir().join("omne-repo-check-target");
+    let path = env::temp_dir().join(shared_cargo_target_dir_name(target_root_key));
     fs::create_dir_all(&path).map_err(|error| {
         format!(
             "repo-check: failed to create shared cargo target dir {}: {error}",
@@ -2291,6 +2293,39 @@ fn shared_cargo_target_dir(_target_root_key: &Path) -> Result<PathBuf, String> {
         )
     })?;
     Ok(path)
+}
+
+fn shared_cargo_target_dir_name(target_root_key: &Path) -> String {
+    let normalized = target_root_key
+        .canonicalize()
+        .unwrap_or_else(|_| target_root_key.to_path_buf());
+    let normalized = normalize_repo_relative_path(&normalized);
+
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let basename = target_root_key
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| {
+            value
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                        character
+                    } else {
+                        '-'
+                    }
+                })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "repo".to_string());
+
+    format!("omne-repo-check-target-{basename}-{hash:016x}")
 }
 
 fn detect_python_runtime(
