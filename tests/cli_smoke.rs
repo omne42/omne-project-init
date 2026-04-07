@@ -93,9 +93,8 @@ fn init_writes_expected_metadata_for_rust_layouts() {
 
     let crate_workspace = fs::read_to_string(rust_crate.path().join("Cargo.toml"))
         .expect("failed to read crate workspace Cargo.toml");
-    assert!(crate_workspace.contains(&format!(
-        "members = [\"crates/{rust_crate_slug}\", \"tools/repo-check\"]"
-    )));
+    assert!(crate_workspace.contains(&format!("members = [\"crates/{rust_crate_slug}\"]")));
+    assert!(crate_workspace.contains("exclude = [\"tools/repo-check\"]"));
     assert!(crate_workspace.contains("resolver = \"3\""));
     assert!(rust_crate.path().join("Cargo.lock").is_file());
 
@@ -128,7 +127,7 @@ fn init_writes_expected_metadata_for_rust_layouts() {
     let root_manifest = fs::read_to_string(rust_root.path().join("Cargo.toml"))
         .expect("failed to read root Cargo.toml");
     assert!(root_manifest.contains("edition = \"2024\""));
-    assert!(root_manifest.contains("members = [\"tools/repo-check\"]"));
+    assert!(root_manifest.contains("exclude = [\"tools/repo-check\"]"));
     assert!(rust_root.path().join("Cargo.lock").is_file());
     assert!(rust_root.path().join("tests/basic.rs").is_file());
 
@@ -136,6 +135,19 @@ fn init_writes_expected_metadata_for_rust_layouts() {
         fs::read_to_string(rust_root.path().join("tools/repo-check/Cargo.toml"))
             .expect("failed to read generated repo-check Cargo.toml");
     assert!(repo_check_manifest.contains("edition = \"2024\""));
+    assert!(repo_check_manifest.contains("[workspace]"));
+    assert!(
+        rust_root
+            .path()
+            .join("tools/repo-check/Cargo.lock")
+            .is_file()
+    );
+    assert!(
+        rust_crate
+            .path()
+            .join("tools/repo-check/Cargo.lock")
+            .is_file()
+    );
 
     let crate_agents = fs::read_to_string(rust_crate.path().join("AGENTS.md"))
         .expect("failed to read crate AGENTS.md");
@@ -166,7 +178,7 @@ fn generated_rust_repo_check_workspace_local_passes_for_root_and_crate() {
 }
 
 #[test]
-fn generated_rust_workspaces_include_repo_check_member() {
+fn generated_rust_workspaces_exclude_repo_check_member() {
     let rust_crate = init_repo(
         "rust-crate-workspace-member",
         &["--project", "rust", "--layout", "crate"],
@@ -178,14 +190,14 @@ fn generated_rust_workspaces_include_repo_check_member() {
 
     let crate_metadata = cargo_metadata(rust_crate.path());
     assert!(
-        crate_metadata.contains("/tools/repo-check/Cargo.toml"),
-        "crate layout metadata did not include tools/repo-check:\n{crate_metadata}"
+        !crate_metadata.contains("/tools/repo-check/Cargo.toml"),
+        "crate layout metadata unexpectedly included tools/repo-check:\n{crate_metadata}"
     );
 
     let root_metadata = cargo_metadata(rust_root.path());
     assert!(
-        root_metadata.contains("/tools/repo-check/Cargo.toml"),
-        "root layout metadata did not include tools/repo-check:\n{root_metadata}"
+        !root_metadata.contains("/tools/repo-check/Cargo.toml"),
+        "root layout metadata unexpectedly included tools/repo-check:\n{root_metadata}"
     );
 }
 
