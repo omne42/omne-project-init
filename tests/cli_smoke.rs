@@ -1057,6 +1057,37 @@ fn generated_node_repo_check_uses_top_level_prerelease_version() {
     );
 }
 
+#[test]
+fn generated_node_repo_check_uses_top_level_version_in_compact_package_json() {
+    let repo = init_repo("node-compact-version", &["--project", "nodejs"]);
+    git_init(repo.path());
+    git_config_identity(repo.path());
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"name\":\"node-compact-version\",\"publishConfig\":{\"version\":\"9.9.9\"},\"version\":\"1.0.0-beta.1\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write compact baseline package.json");
+    git_commit_all(repo.path(), "chore(repo): prepare compact node baseline");
+
+    fs::write(
+        repo.path().join("package.json"),
+        "{\"name\":\"node-compact-version\",\"publishConfig\":{\"version\":\"1.0.0-beta.1\"},\"version\":\"2.0.0-beta.1\",\"type\":\"module\"}\n",
+    )
+    .expect("failed to write compact updated package.json");
+    git_add_all(repo.path());
+
+    let output = run_generated_repo_check_failure(repo.path(), &["pre-commit"]);
+    assert!(
+        output.contains("refusing major version change by default"),
+        "expected compact package.json major bump gate, got:\n{output}"
+    );
+    assert!(
+        !output.contains("unsupported version"),
+        "compact package.json prerelease version was rejected:\n{output}"
+    );
+}
+
 fn init_repo(prefix: &str, args: &[&str]) -> TempDir {
     let repo = TempDir::new(prefix);
     let mut cli_args = vec![
