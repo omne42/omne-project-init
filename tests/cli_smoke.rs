@@ -596,6 +596,37 @@ fn force_reinit_refuses_to_overwrite_non_generated_colliding_paths() {
 }
 
 #[test]
+fn force_reinit_refuses_stale_non_generated_paths_inside_obsolete_generated_directories() {
+    let repo = TempDir::new("force-reinit-stale-residue");
+    run_cli([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "rust",
+        "--layout",
+        "crate",
+        "--no-git-init",
+    ]);
+
+    fs::write(
+        repo.path().join("crates/manual-note.txt"),
+        "manual file inside old generated dir\n",
+    )
+    .expect("failed to seed stale manual file");
+
+    let output = run_cli_failure([
+        "init",
+        repo.path().to_string_lossy().as_ref(),
+        "--project",
+        "python",
+        "--force",
+        "--no-git-init",
+    ]);
+    assert!(output.contains("obsolete generated directories still contain non-generated paths"));
+    assert!(output.contains("crates/manual-note.txt"));
+}
+
+#[test]
 fn init_refuses_missing_git_before_writing_any_files() {
     let repo = TempDir::new("missing-git-preflight");
     let mut command = Command::new(cli_binary());
