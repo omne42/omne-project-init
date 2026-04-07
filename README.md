@@ -122,7 +122,7 @@ cargo run -- manifest /path/to/new-repo --project rust --layout crate
 
 `--force` 现在只用于安全重生成已经由 `omne-project-init` 生成过、且仍保留有效 `repo-check.toml` 的仓库。它会先校验旧 scaffold 的受管文件没有被手改，再清理旧 scaffold 的受管文件，然后写入新模板，避免不同 project/layout 的旧生成物被混在一起，也避免覆盖非生成文件。
 
-生成 Rust 项目时，workspace 会把 `tools/repo-check` 直接纳入 member，确保 `workspace local` / `workspace ci` 的 `fmt`、`check`、`test`、`clippy` 会覆盖治理工具本身，而不是把治理工具排除在 workspace 之外。
+生成 Rust 项目时，workspace 会把 `tools/repo-check` 直接纳入 member，确保 `workspace local` / `workspace ci` 实际执行到的 `fmt`、`check`、`test`、`clippy` 都会覆盖治理工具本身，而不是把治理工具排除在 workspace 之外。
 
 生成 Python 项目时，模板会声明 `requires-python = ">=3.11"`；生成出的 `repo-check` 会按 `pyproject.toml` 当前声明选择兼容解释器，并在版本不满足时直接失败。
 
