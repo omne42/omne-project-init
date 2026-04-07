@@ -673,6 +673,54 @@ fn generated_docs_include_map_entrypoints_and_branch_protection_policy() {
 }
 
 #[test]
+fn generated_hook_policy_docs_match_project_kind() {
+    let rust_root = init_repo(
+        "rust-hook-policy",
+        &["--project", "rust", "--layout", "root"],
+    );
+    let rust_crate = init_repo(
+        "rust-crate-hook-policy",
+        &["--project", "rust", "--layout", "crate"],
+    );
+    let python = init_repo("python-hook-policy", &["--project", "python"]);
+    let node = init_repo("node-hook-policy", &["--project", "nodejs"]);
+
+    let rust_root_rules = fs::read_to_string(rust_root.path().join("docs/规范/Hook与质量门禁.md"))
+        .expect("failed to read rust root hook policy doc");
+    assert!(rust_root_rules.contains("Rust gate"));
+    assert!(!rust_root_rules.contains("Python gate"));
+    assert!(!rust_root_rules.contains("Node.js gate"));
+    assert!(!rust_root_rules.contains(".github/workflows/ci.yml"));
+
+    let rust_crate_rules =
+        fs::read_to_string(rust_crate.path().join("docs/规范/Hook与质量门禁.md"))
+            .expect("failed to read rust crate hook policy doc");
+    assert!(rust_crate_rules.contains("workspace 根版本变更"));
+    assert!(!rust_crate_rules.contains("Python gate"));
+    assert!(!rust_crate_rules.contains("Node.js gate"));
+    assert!(!rust_crate_rules.contains(".github/workflows/ci.yml"));
+
+    let python_rules = fs::read_to_string(python.path().join("docs/规范/Hook与质量门禁.md"))
+        .expect("failed to read python hook policy doc");
+    let expected_python_package = repo_slug(python.path()).replace('-', "_");
+    assert!(python_rules.contains("Python gate"));
+    assert!(python_rules.contains(&format!(
+        "python -m compileall {expected_python_package} tests"
+    )));
+    assert!(!python_rules.contains("Rust gate"));
+    assert!(!python_rules.contains("Node.js gate"));
+    assert!(!python_rules.contains(".github/workflows/ci.yml"));
+
+    let node_rules = fs::read_to_string(node.path().join("docs/规范/Hook与质量门禁.md"))
+        .expect("failed to read node hook policy doc");
+    assert!(node_rules.contains("Node.js gate"));
+    assert!(node_rules.contains("node --check src/index.js"));
+    assert!(!node_rules.contains("Rust gate"));
+    assert!(!node_rules.contains("Python gate"));
+    assert!(!node_rules.contains(".github/workflows/ci.yml"));
+}
+
+#[test]
 fn generated_repo_check_uses_configured_manifest_and_changelog_paths() {
     let repo = init_repo("node-config-paths", &["--project", "nodejs"]);
     git_init(repo.path());
