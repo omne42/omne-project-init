@@ -301,6 +301,125 @@ fn commit_msg_detects_single_line_node_major_bump() {
 }
 
 #[test]
+fn commit_msg_detects_prerelease_node_major_bump() {
+    let repo = init_repo("node-major-bump-prerelease", &["--project", "nodejs"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("package.json"),
+        "\"version\": \"0.1.0\"",
+        "\"version\": \"1.2.3-beta.1\"",
+    );
+    git_add(repo.path(), &["package.json"]);
+    commit_all(repo.path(), "chore(node): prepare prerelease baseline");
+
+    replace_in_file(
+        repo.path().join("package.json"),
+        "\"version\": \"1.2.3-beta.1\"",
+        "\"version\": \"2.0.0-rc.1\"",
+    );
+    git_add(repo.path(), &["package.json"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.prerelease-node");
+    fs::write(
+        &commit_msg,
+        "feat(node): prerelease major bump without marker\n",
+    )
+    .expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("requires an explicit breaking commit message"),
+        "expected prerelease node major to require breaking marker, got: {error}"
+    );
+}
+
+#[test]
+fn commit_msg_detects_python_epoch_major_bump() {
+    let repo = init_repo("python-major-bump-epoch", &["--project", "python"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("pyproject.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1!1.2.3rc1\"",
+    );
+    git_add(repo.path(), &["pyproject.toml"]);
+    commit_all(repo.path(), "chore(python): prepare epoch baseline");
+
+    replace_in_file(
+        repo.path().join("pyproject.toml"),
+        "version = \"1!1.2.3rc1\"",
+        "version = \"1!2.0.0rc1\"",
+    );
+    git_add(repo.path(), &["pyproject.toml"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.python-epoch");
+    fs::write(
+        &commit_msg,
+        "feat(python): epoch major bump without marker\n",
+    )
+    .expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("requires an explicit breaking commit message"),
+        "expected PEP 440 epoch major to require breaking marker, got: {error}"
+    );
+}
+
+#[test]
+fn python_epoch_prerelease_versions_are_accepted_by_commit_msg_gate() {
+    let repo = init_repo("python-epoch-prerelease", &["--project", "python"]);
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    replace_in_file(
+        repo.path().join("pyproject.toml"),
+        "version = \"0.1.0\"",
+        "version = \"1!1.0.0a1\"",
+    );
+    git_add(repo.path(), &["pyproject.toml"]);
+    commit_all(repo.path(), "feat(python)!: enter epoch prerelease");
+
+    replace_in_file(
+        repo.path().join("pyproject.toml"),
+        "version = \"1!1.0.0a1\"",
+        "version = \"1!1.0.0a2\"",
+    );
+    git_add(repo.path(), &["pyproject.toml"]);
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.python-epoch-prerelease");
+    fs::write(
+        &commit_msg,
+        "fix(python): adjust epoch prerelease metadata\n",
+    )
+    .expect("write commit msg");
+    run_generated_repo_check(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+}
+
+#[test]
 fn pre_commit_requires_override_for_stable_major_transition() {
     let repo = init_repo(
         "rust-stable-major-pre-commit",
