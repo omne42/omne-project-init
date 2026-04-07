@@ -602,9 +602,6 @@ fn git_ls_files(repo_root: &Path, pathspec: &Path) -> Result<Option<Vec<PathBuf>
         .arg(repo_root)
         .arg("ls-files")
         .arg("-z")
-        .arg("--cached")
-        .arg("--others")
-        .arg("--exclude-standard")
         .arg("--")
         .arg(&normalized_pathspec)
         .output();
