@@ -79,6 +79,15 @@ run_with_workspace_manifest() {
   exec cargo run --quiet --manifest-path "$workspace_manifest" -p omne-repo-check -- pre-commit --repo-root "$repo_root"
 }
 
+workspace_manifest_has_repo_check_package() {
+  workspace_manifest="$1"
+  if [ ! -f "$workspace_manifest" ]; then
+    return 1
+  fi
+  cargo metadata --format-version 1 --no-deps --manifest-path "$workspace_manifest" 2>/dev/null \
+    | grep -F '"name":"omne-repo-check"' >/dev/null 2>&1
+}
+
 manifest_override="${OMNE_REPO_CHECK_MANIFEST:-}"
 if [ -n "$manifest_override" ]; then
   if ! command -v cargo >/dev/null 2>&1; then
@@ -102,7 +111,7 @@ fi
 default_manifest="$repo_root/tools/repo-check/Cargo.toml"
 if [ -f "$default_manifest" ] && command -v cargo >/dev/null 2>&1; then
   workspace_manifest="$(resolve_rust_workspace_manifest || true)"
-  if [ -n "$workspace_manifest" ]; then
+  if [ -n "$workspace_manifest" ] && workspace_manifest_has_repo_check_package "$workspace_manifest"; then
     run_with_workspace_manifest "$workspace_manifest"
   fi
   run_with_manifest "$default_manifest"

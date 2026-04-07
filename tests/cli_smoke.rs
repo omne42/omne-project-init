@@ -288,52 +288,46 @@ fn generated_rust_repo_check_git_flow_passes() {
         return;
     }
 
-    let repo = init_repo("rust-git-flow", &["--project", "rust", "--layout", "crate"]);
-    git_init(repo.path());
-    run_ok(
-        "git checkout feature branch",
-        Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .arg("checkout")
-            .arg("-b")
-            .arg("feat/smoke-check"),
-    );
-    run_generated_repo_check(repo.path(), &["install-hooks"]);
+    for layout in ["root", "crate"] {
+        let repo = init_repo(
+            &format!("rust-git-flow-{layout}"),
+            &["--project", "rust", "--layout", layout],
+        );
+        git_init(repo.path());
+        run_ok(
+            "git checkout feature branch",
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .arg("checkout")
+                .arg("-b")
+                .arg("feat/smoke-check"),
+        );
+        run_generated_repo_check(repo.path(), &["install-hooks"]);
 
-    let hooks_path = run_ok(
-        "git config core.hooksPath",
-        Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .arg("config")
-            .arg("--get")
-            .arg("core.hooksPath"),
-    );
-    assert_eq!(hooks_path.trim(), "githooks");
+        let hooks_path = run_ok(
+            "git config core.hooksPath",
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .arg("config")
+                .arg("--get")
+                .arg("core.hooksPath"),
+        );
+        assert_eq!(hooks_path.trim(), "githooks");
 
-    run_ok(
-        "git add",
-        Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .arg("add")
-            .arg("."),
-    );
+        git_add_all(repo.path());
+        run_generated_hook(repo.path(), "pre-commit", &[]);
 
-    run_generated_repo_check(repo.path(), &["pre-commit"]);
-
-    let commit_msg = repo.path().join("COMMIT_EDITMSG.test");
-    fs::write(&commit_msg, "feat(repo): initial scaffold\n")
-        .expect("failed to write commit message file");
-    run_generated_repo_check(
-        repo.path(),
-        &[
+        let commit_msg = repo.path().join("COMMIT_EDITMSG.test");
+        fs::write(&commit_msg, "feat(repo): initial scaffold\n")
+            .expect("failed to write commit message file");
+        run_generated_hook(
+            repo.path(),
             "commit-msg",
-            "--commit-msg-file",
-            commit_msg.to_string_lossy().as_ref(),
-        ],
-    );
+            &[commit_msg.to_string_lossy().as_ref()],
+        );
+    }
 }
 
 #[test]
@@ -1243,6 +1237,24 @@ fn run_generated_repo_check_failure(repo_root: &Path, args: &[&str]) -> String {
     }
 
     run_fail("generated repo-check", &mut command)
+}
+
+fn run_generated_hook(repo_root: &Path, hook_name: &str, args: &[&str]) -> String {
+    let _guard = generated_repo_check_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let hook_path = repo_root.join("githooks").join(hook_name);
+    let mut command = Command::new(&hook_path);
+    command.current_dir(repo_root);
+    command.env("CARGO_TARGET_DIR", generated_target_dir(repo_root));
+    for arg in args {
+        command.arg(arg);
+    }
+
+    run_ok(
+        &format!("generated hook {}", hook_path.display()),
+        &mut command,
+    )
 }
 
 fn cargo_metadata(repo_root: &Path) -> String {
