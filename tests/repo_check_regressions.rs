@@ -138,6 +138,33 @@ fn pre_commit_checks_staged_snapshot() {
 }
 
 #[test]
+fn pre_commit_uses_staged_repo_check_config() {
+    let repo = init_repo(
+        "staged-config-pre-commit",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let config_path = repo.path().join("repo-check.toml");
+    let original = fs::read_to_string(&config_path).expect("read repo-check.toml");
+    let staged = original.replace(
+        "primary_source_path = \"src/main.rs\"",
+        "primary_source_path = \"src/missing.rs\"",
+    );
+    assert_ne!(original, staged, "expected repo-check.toml replacement");
+    fs::write(&config_path, &staged).expect("write staged repo-check.toml");
+    git_add(repo.path(), &["repo-check.toml"]);
+    fs::write(&config_path, original).expect("restore worktree repo-check.toml");
+
+    let error = run_generated_repo_check_fail(repo.path(), &["pre-commit"]);
+    assert!(
+        error.contains("configured primary_source_path does not exist as a file"),
+        "expected staged repo-check config to be validated, got: {error}"
+    );
+}
+
+#[test]
 fn workspace_local_validates_declared_python_requires_python() {
     let repo = init_repo("python-requires-python", &["--project", "python"]);
 
@@ -260,6 +287,43 @@ fn commit_msg_detects_top_level_node_major_bump() {
     assert!(
         error.contains("requires an explicit breaking commit message"),
         "expected breaking marker failure, got: {error}"
+    );
+}
+
+#[test]
+fn commit_msg_uses_staged_repo_check_config() {
+    let repo = init_repo(
+        "staged-config-commit-msg",
+        &["--project", "rust", "--layout", "root"],
+    );
+    git_init(repo.path());
+    commit_all(repo.path(), "feat(repo): initial scaffold");
+
+    let config_path = repo.path().join("repo-check.toml");
+    let original = fs::read_to_string(&config_path).expect("read repo-check.toml");
+    let staged = original.replace(
+        "primary_source_path = \"src/main.rs\"",
+        "primary_source_path = \"src/missing.rs\"",
+    );
+    assert_ne!(original, staged, "expected repo-check.toml replacement");
+    fs::write(&config_path, &staged).expect("write staged repo-check.toml");
+    git_add(repo.path(), &["repo-check.toml"]);
+    fs::write(&config_path, original).expect("restore worktree repo-check.toml");
+
+    let commit_msg = repo.path().join("COMMIT_EDITMSG.staged-config");
+    fs::write(&commit_msg, "fix(repo): keep staged config authoritative\n")
+        .expect("write commit msg");
+    let error = run_generated_repo_check_fail(
+        repo.path(),
+        &[
+            "commit-msg",
+            "--commit-msg-file",
+            commit_msg.to_string_lossy().as_ref(),
+        ],
+    );
+    assert!(
+        error.contains("configured primary_source_path does not exist as a file"),
+        "expected staged repo-check config to be validated, got: {error}"
     );
 }
 

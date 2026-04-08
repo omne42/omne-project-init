@@ -186,8 +186,7 @@ fn real_main() -> Result<(), String> {
         CliCommand::InstallHooks { repo_root } => install_hooks(&normalize_repo_root(repo_root)),
         CliCommand::PreCommit { repo_root } => {
             let repo_root = normalize_repo_root(repo_root);
-            let config = RepoConfig::load(&repo_root)?;
-            validate_layout_shape(&repo_root, &config)?;
+            let config = staged_or_live_repo_config(&repo_root)?;
             run_pre_commit(&repo_root, &config)
         }
         CliCommand::CommitMsg {
@@ -195,8 +194,7 @@ fn real_main() -> Result<(), String> {
             commit_msg_file,
         } => {
             let repo_root = normalize_repo_root(repo_root);
-            let config = RepoConfig::load(&repo_root)?;
-            validate_layout_shape(&repo_root, &config)?;
+            let config = staged_or_live_repo_config(&repo_root)?;
             run_commit_msg(&repo_root, &config, &commit_msg_file)
         }
         CliCommand::Workspace { repo_root, mode } => {
@@ -209,6 +207,13 @@ fn real_main() -> Result<(), String> {
             validate_branch_name(&normalize_repo_root(repo_root))
         }
     }
+}
+
+fn staged_or_live_repo_config(repo_root: &Path) -> Result<RepoConfig, String> {
+    if let Some(config) = RepoConfig::load_from_git(repo_root, "")? {
+        return Ok(config);
+    }
+    RepoConfig::load(repo_root)
 }
 
 fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<CliCommand, String> {
@@ -431,6 +436,9 @@ fn run_pre_commit(repo_root: &Path, config: &RepoConfig) -> Result<(), String> {
     if staged.paths.is_empty() {
         return Ok(());
     }
+    let snapshot = TempDir::new("repo-check-index")?;
+    export_index_snapshot(repo_root, snapshot.path())?;
+    validate_layout_shape(snapshot.path(), config)?;
 
     require_major_bump_override(repo_root, config)?;
     validate_allowed_changelog_paths(config, &staged)?;
@@ -439,7 +447,7 @@ fn run_pre_commit(repo_root: &Path, config: &RepoConfig) -> Result<(), String> {
     validate_not_changelog_only(&staged)?;
     validate_released_sections_immutable(repo_root, config, &staged)?;
 
-    run_workspace_checks_on_staged_snapshot(repo_root, config, WorkspaceMode::Local)
+    run_workspace_checks(snapshot.path(), snapshot.path(), config, WorkspaceMode::Local)
 }
 
 fn run_commit_msg(
@@ -448,6 +456,9 @@ fn run_commit_msg(
     commit_msg_file: &Path,
 ) -> Result<(), String> {
     validate_branch_name(repo_root)?;
+    let snapshot = TempDir::new("repo-check-index")?;
+    export_index_snapshot(repo_root, snapshot.path())?;
+    validate_layout_shape(snapshot.path(), config)?;
     let commit_message = read_commit_message(commit_msg_file)?;
     let first_line = commit_message
         .lines()
